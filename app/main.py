@@ -114,12 +114,34 @@ async def fetch_info(payload: VideoInfoRequest):
         if "Sign in to confirm your age" in error_msg:
             raise HTTPException(status_code=403, detail="Age-restricted content cannot be retrieved directly.")
         if "not a bot" in error_msg.lower() or "Use --cookies" in error_msg:
-            raise HTTPException(
-                status_code=403,
-                detail=(
+            if COOKIES_FILE:
+                detail = (
+                    "YouTube still blocked this cloud request even with cookies. "
+                    "Your cookies are likely expired/rotated. Export a FRESH cookies.txt "
+                    "(logged into YouTube), convert to base64, update YOUTUBE_COOKIES_BASE64 "
+                    "on Render, then redeploy/restart."
+                )
+            else:
+                detail = (
                     "YouTube bot check blocked this request. "
                     "On Render, set YOUTUBE_COOKIES_BASE64 (or COOKIES_FILE) "
                     "with a fresh cookies.txt from a logged-in browser."
+                )
+            raise HTTPException(status_code=403, detail=detail)
+        if "cookies are no longer valid" in error_msg.lower() or "rotated" in error_msg.lower():
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "YouTube cookies are expired/rotated. Export fresh cookies from a "
+                    "logged-in browser and update YOUTUBE_COOKIES_BASE64 on Render."
+                ),
+            )
+        if "Requested format is not available" in error_msg or "Only images are available" in error_msg:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "YouTube stream formats could not be resolved on this server. "
+                    "Redeploy with Deno/JS challenge support enabled, or try again shortly."
                 ),
             )
         raise HTTPException(status_code=500, detail=f"Failed to analyze video: {error_msg}")

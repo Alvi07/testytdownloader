@@ -29,10 +29,13 @@ BASE_YTDL_OPTS: Dict[str, Any] = {
     "nocheckcertificate": True,
     "geo_bypass": True,
     "socket_timeout": 30,
-    # Helps on some cloud IPs; cookies are still required on Render for YouTube
+    # YouTube now requires a JS runtime + EJS challenge solver (Deno)
+    "js_runtimes": {"deno": {}},
+    "remote_components": ["ejs:github"],
+    # Prefer clients that honor browser cookies (avoid ios — it ignores cookies)
     "extractor_args": {
         "youtube": {
-            "player_client": ["android", "web"],
+            "player_client": ["web", "mweb", "android"],
         }
     },
 }
@@ -56,13 +59,20 @@ def _extract_info_sync(url: str) -> Dict[str, Any]:
     ydl_opts = _build_ydl_opts({
         "extract_flat": False,
         "skip_download": True,
+        # Do not force a stream format during metadata fetch
+        "ignore_no_formats_error": True,
     })
+    # Ensure no inherited/default format filter breaks info extraction
+    ydl_opts.pop("format", None)
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(
             url,
             download=False,
         )
+
+        if not info:
+            raise ValueError("Could not extract information from the provided URL.")
 
         return ydl.sanitize_info(info)
 
@@ -507,6 +517,7 @@ def _download_sync(
                 f"/bestvideo[height<={height}]"
                 "+bestaudio"
                 f"/best[height<={height}]"
+                "/bestvideo+bestaudio"
                 "/best"
             ),
 
