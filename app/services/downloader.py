@@ -28,14 +28,22 @@ BASE_YTDL_OPTS: Dict[str, Any] = {
     "nocheckcertificate": True,
     "geo_bypass": True,
     "socket_timeout": 60,
-    # YouTube now requires a JS runtime + EJS challenge solver (Deno)
+    "retries": 10,
+    "fragment_retries": 10,
+    "file_access_retries": 5,
+    "concurrent_fragment_downloads": 1,
+    # YouTube JS challenge solver
     "js_runtimes": {"deno": {}},
     "remote_components": ["ejs:github"],
-    # Prefer clients that honor browser cookies (avoid ios — it ignores cookies)
+    # Avoid android_sdkless formats that often 403 on CDN
     "extractor_args": {
         "youtube": {
-            "player_client": ["web", "mweb", "android"],
+            "player_client": ["default", "-android_sdkless"],
         }
+    },
+    "http_headers": {
+        "Referer": "https://www.youtube.com/",
+        "Origin": "https://www.youtube.com",
     },
 }
 
@@ -43,6 +51,15 @@ BASE_YTDL_OPTS: Dict[str, Any] = {
 def _build_ydl_opts(extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Merge base opts with optional extras and cookies file when available."""
     opts: Dict[str, Any] = {**BASE_YTDL_OPTS, **(extra or {})}
+    # Deep-copy nested dicts so callers can safely mutate per attempt
+    if "extractor_args" in opts:
+        opts["extractor_args"] = {
+            k: (dict(v) if isinstance(v, dict) else v)
+            for k, v in opts["extractor_args"].items()
+        }
+    if "http_headers" in opts:
+        opts["http_headers"] = dict(opts["http_headers"])
+
     if COOKIES_FILE is not None:
         opts["cookiefile"] = str(COOKIES_FILE)
         # Custom UA + browser cookies often triggers YouTube bot checks on download
@@ -59,6 +76,17 @@ def _is_bot_block_error(exc: Exception) -> bool:
         or "use --cookies" in msg
         or "sign in to confirm" in msg
         or "cookies are no longer valid" in msg
+    )
+
+
+def _is_retryable_download_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return (
+        _is_bot_block_error(exc)
+        or "format is not available" in msg
+        or "http error 403" in msg
+        or "403: forbidden" in msg
+        or "unable to download video data" in msg
     )
 
 
@@ -523,62 +551,86 @@ def _download_sync(
 
 
         ydl_opts.update({
-
-            # Prefer progressive "best" first — merge formats need harder JS/PO auth
             "format": (
-                f"best[height<={height}][ext=mp4]"
-                f"/best[height<={height}]"
-                f"/bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]"
-                f"/bestvideo[height<={height}]+bestaudio"
-                "/bestvideo+bestaudio"
-                "/best"
+                f"best[height<={height}][ext=mp4]/"
+                f"best[height<={height}]/"
+                f"bestvideo[height<={height}]+bestaudio/"
+                "bestvideo+bestaudio/best"
             ),
-
             "merge_output_format": "mp4",
         })
 
         target_ext = "mp4"
-
         content_type = "video/mp4"
 
-
     # -----------------------------------------------------------------------
-    # DOWNLOAD (retry with alternate YouTube clients if bot-blocked)
+    # DOWNLOAD — try modern defaults first, then softer format fallbacks
+    # Forced web/android clients often break cookies / cause CDN 403s.
     # -----------------------------------------------------------------------
 
-    client_attempts = [
-        ["web", "mweb", "android"],
-        ["mweb", "web"],
-        ["android", "web"],
-        ["tv_embedded", "web"],
+    preferred_format = ydl_opts.get("format", "best")
+    attempts: List[Dict[str, Any]] = [
+        {
+            "label": "default,-android_sdkless",
+            "player_client": ["default", "-android_sdkless"],
+            "format": preferred_format,
+        },
+        {
+            "label": "default,-android_sdkless + best",
+            "player_client": ["default", "-android_sdkless"],
+            "format": "bestvideo+bestaudio/best",
+        },
+        {
+            "label": "web only",
+            "player_client": ["web"],
+            "format": preferred_format,
+        },
+        {
+            "label": "mweb only",
+            "player_client": ["mweb"],
+            "format": "best/bestvideo+bestaudio",
+        },
+        {
+            "label": "ios m3u8 fallback",
+            "player_client": ["default", "ios", "-android_sdkless"],
+            "format": (
+                "bv*[protocol=m3u8_native]+ba*[protocol=m3u8_native]/"
+                "b[protocol=m3u8_native]/best"
+            ),
+            "formats_missing_pot": True,
+        },
     ]
 
     last_error: Optional[Exception] = None
     info: Optional[Dict[str, Any]] = None
 
-    for clients in client_attempts:
-        attempt_opts = dict(ydl_opts)
-        attempt_opts["extractor_args"] = {
-            "youtube": {"player_client": clients}
+    for attempt in attempts:
+        attempt_opts = _build_ydl_opts({
+            "outtmpl": out_template,
+            "format": attempt["format"],
+        })
+        # preserve audio postprocessors / merge opts from primary config
+        for key in ("postprocessors", "merge_output_format"):
+            if key in ydl_opts:
+                attempt_opts[key] = ydl_opts[key]
+
+        youtube_args: Dict[str, Any] = {
+            "player_client": attempt["player_client"],
         }
-        if COOKIES_FILE is not None:
-            attempt_opts["cookiefile"] = str(COOKIES_FILE)
-            attempt_opts.pop("user_agent", None)
+        if attempt.get("formats_missing_pot"):
+            youtube_args["formats"] = ["missing_pot"]
+        attempt_opts["extractor_args"] = {"youtube": youtube_args}
 
         try:
-            logger.info("Download attempt with player_client=%s", clients)
+            logger.info("Download attempt: %s", attempt["label"])
             with yt_dlp.YoutubeDL(attempt_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
             if info:
                 break
         except Exception as exc:
             last_error = exc
-            logger.warning(
-                "Download attempt failed (%s): %s",
-                clients,
-                exc,
-            )
-            if not _is_bot_block_error(exc) and "format is not available" not in str(exc).lower():
+            logger.warning("Download attempt failed (%s): %s", attempt["label"], exc)
+            if not _is_retryable_download_error(exc):
                 raise
             continue
 
@@ -587,14 +639,8 @@ def _download_sync(
             raise last_error
         raise RuntimeError("Download failed: no media returned.")
 
-    raw_title = info.get(
-        "title",
-        "download",
-    )
-
-    sanitized_title = sanitize_filename(
-        raw_title
-    )
+    raw_title = info.get("title", "download")
+    sanitized_title = sanitize_filename(raw_title)
 
 
     # -----------------------------------------------------------------------

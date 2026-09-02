@@ -182,13 +182,19 @@ async def download_file(
     except Exception as e:
         logger.error(f"Download error for {url}: {e}")
         error_msg = str(e)
-        if "not a bot" in error_msg.lower() or "Use --cookies" in error_msg or "Sign in to confirm" in error_msg:
+        if (
+            "not a bot" in error_msg.lower()
+            or "Use --cookies" in error_msg
+            or "Sign in to confirm" in error_msg
+            or "HTTP Error 403" in error_msg
+            or "403: Forbidden" in error_msg
+        ):
             raise HTTPException(
                 status_code=403,
                 detail=(
-                    "YouTube blocked the download step (bot check). "
-                    "Analyze can work while download needs stronger cookies/session. "
-                    "Export FRESH YouTube cookies, update YOUTUBE_COOKIES_BASE64, restart the service."
+                    "YouTube blocked media download from this cloud IP (bot check / CDN 403). "
+                    "Analyze can succeed while download fails on free Render. "
+                    "Try fresh cookies, or run downloads from a home PC / residential proxy."
                 ),
             )
         raise HTTPException(status_code=500, detail=f"Download failed: {error_msg}")

@@ -27,7 +27,10 @@ WORKDIR /app
 # Install Python requirements (yt-dlp[default] includes ejs helper)
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt \
-    && pip install --no-cache-dir -U "yt-dlp[default]"
+    && pip install --no-cache-dir -U "yt-dlp[default]" \
+    && pip install --no-cache-dir -U --pre "yt-dlp[default]" || true \
+    && yt-dlp --version \
+    && deno --version
 
 # Copy application source code
 COPY . .
