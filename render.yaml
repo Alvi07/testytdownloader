@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: prostream-video-downloader
+    env: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    envVars:
+      - key: PORT
+        value: 10000

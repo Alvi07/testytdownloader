@@ -1,0 +1,1007 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>ProStream | Next-Gen YouTube & Video Downloader</title>
+
+    <meta
+        name="description"
+        content="Download YouTube videos, Shorts, Instagram Reels, TikToks in 1080p Full HD & 320kbps MP3 audio at lightning speeds.">
+
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+
+    <link
+        href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Syne:wght@700;800&display=swap"
+        rel="stylesheet">
+
+    <!-- Font Awesome -->
+    <link
+        rel="stylesheet"
+        href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+
+    <!-- Google reCAPTCHA Enterprise (COMMENTED for local/dev — uncomment for production) -->
+    <!-- <script src="https://www.google.com/recaptcha/enterprise.js?render=6LdiD6UtAAAAAFO5JGuyFtRedpH3cbaWTc0ChFR6"></script> -->
+
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+
+<body>
+
+    <!-- Background Glow Orbs -->
+    <div class="bg-glow bg-glow-1"></div>
+    <div class="bg-glow bg-glow-2"></div>
+    <div class="bg-glow bg-glow-3"></div>
+
+
+    <!-- Navigation Header -->
+    <header class="navbar">
+
+        <div class="nav-container">
+
+            <a href="/" class="brand-logo">
+
+                <div class="logo-icon">
+                    <i class="fa-solid fa-bolt"></i>
+                </div>
+
+                <span class="logo-text">
+                    Pro<span>Stream</span>
+                </span>
+
+            </a>
+
+
+            <div class="nav-actions">
+
+                <button
+                    id="historyToggleBtn"
+                    class="btn-icon-nav"
+                    title="Download History">
+
+                    <i class="fa-solid fa-clock-rotate-left"></i>
+
+                    <span
+                        class="history-badge"
+                        id="historyBadge">
+                        0
+                    </span>
+
+                </button>
+
+
+                <a href="#features" class="nav-link">
+                    Features
+                </a>
+
+                <a href="#faq" class="nav-link">
+                    FAQ
+                </a>
+
+
+                <div class="status-indicator">
+
+                    <span class="status-dot"></span>
+
+                    <span class="status-text">
+                        Engine Online
+                    </span>
+
+                </div>
+
+            </div>
+
+        </div>
+
+    </header>
+
+
+
+    <!-- Main Content -->
+    <main class="main-wrapper">
+
+
+        <!-- Hero Section -->
+        <section class="hero-section">
+
+            <div class="hero-badge">
+
+                <i class="fa-solid fa-sparkles"></i>
+
+                High-Speed 4K & MP3 Processing
+
+            </div>
+
+
+            <h1 class="hero-title">
+
+                Download Media from <br>
+
+                <span class="gradient-text">
+                    YouTube & Beyond
+                </span>
+
+            </h1>
+
+
+            <p class="hero-subtitle">
+
+                Extract high-definition videos, YouTube Shorts, Reels,
+                and 320kbps audio directly with zero compression loss.
+
+            </p>
+
+
+
+            <!-- Platform Supported Badges -->
+            <div class="platform-chips">
+
+                <span class="chip active">
+
+                    <i class="fa-brands fa-youtube"></i>
+
+                    YouTube
+
+                </span>
+
+
+                <span class="chip">
+
+                    <i class="fa-solid fa-film"></i>
+
+                    Shorts
+
+                </span>
+
+
+                <span class="chip">
+
+                    <i class="fa-brands fa-instagram"></i>
+
+                    Reels
+
+                </span>
+
+
+                <span class="chip">
+
+                    <i class="fa-brands fa-tiktok"></i>
+
+                    TikTok
+
+                </span>
+
+
+                <span class="chip">
+
+                    <i class="fa-brands fa-facebook"></i>
+
+                    Facebook
+
+                </span>
+
+            </div>
+
+
+
+            <!-- Downloader Input Box -->
+            <div class="download-card">
+
+                <form
+                    id="downloadForm"
+                    class="input-form">
+
+
+                    <div class="input-group">
+
+                        <div class="input-icon">
+
+                            <i class="fa-solid fa-link"></i>
+
+                        </div>
+
+
+                        <input
+                            type="url"
+                            id="videoUrlInput"
+                            placeholder="Paste YouTube, Reel, or video link here..."
+                            required
+                            autocomplete="off">
+
+
+                        <button
+                            type="button"
+                            id="pasteBtn"
+                            class="btn-paste"
+                            title="Paste from clipboard">
+
+                            <i class="fa-solid fa-paste"></i>
+
+                            <span>
+                                Paste
+                            </span>
+
+                        </button>
+
+
+                        <button
+                            type="button"
+                            id="clearBtn"
+                            class="btn-clear hidden"
+                            title="Clear input">
+
+                            <i class="fa-solid fa-xmark"></i>
+
+                        </button>
+
+                    </div>
+
+
+
+                    <!--
+                        Google reCAPTCHA Enterprise
+
+                        No g-recaptcha checkbox here.
+                        Enterprise generates a token automatically
+                        when the user submits the form.
+                    -->
+
+                    <div
+                        id="recaptchaStatus"
+                        class="recaptcha-status"
+                        style="display:none;">
+
+                        <i class="fa-solid fa-shield-halved"></i>
+
+                        <span>
+                            Security verification in progress...
+                        </span>
+
+                    </div>
+
+
+
+                    <!-- Analyze Button -->
+                    <button
+                        type="submit"
+                        id="submitBtn"
+                        class="btn-submit">
+
+                        <span class="btn-text">
+                            Analyze Video
+                        </span>
+
+                        <i class="fa-solid fa-arrow-right btn-arrow"></i>
+
+                        <div
+                            class="spinner hidden"
+                            id="btnSpinner">
+                        </div>
+
+                    </button>
+
+                </form>
+
+
+
+                <!-- Quick Tips -->
+                <div class="input-footer-tips">
+
+                    <span>
+
+                        <i class="fa-solid fa-shield-check"></i>
+
+                        Safe & Encrypted
+
+                    </span>
+
+
+                    <span>
+
+                        <i class="fa-solid fa-gauge-high"></i>
+
+                        Chunked Fast Stream
+
+                    </span>
+
+
+                    <span>
+
+                        <i class="fa-solid fa-circle-check"></i>
+
+                        No Registration Needed
+
+                    </span>
+
+                </div>
+
+            </div>
+
+        </section>
+
+
+
+        <!-- Skeleton Loading State -->
+        <section
+            id="skeletonLoader"
+            class="skeleton-container hidden">
+
+            <div class="skeleton-card">
+
+                <div class="skeleton-thumb shimmer"></div>
+
+
+                <div class="skeleton-details">
+
+                    <div
+                        class="skeleton-line skeleton-title shimmer">
+                    </div>
+
+
+                    <div
+                        class="skeleton-line skeleton-meta shimmer">
+                    </div>
+
+
+                    <div class="skeleton-grid">
+
+                        <div class="skeleton-box shimmer"></div>
+
+                        <div class="skeleton-box shimmer"></div>
+
+                        <div class="skeleton-box shimmer"></div>
+
+                    </div>
+
+                </div>
+
+            </div>
+
+        </section>
+
+
+
+        <!-- Video Result Section -->
+        <section
+            id="resultSection"
+            class="result-section hidden">
+
+            <div class="result-card">
+
+
+                <!-- Video Media Details -->
+                <div class="video-preview-row">
+
+                    <div class="thumb-container">
+
+                        <img
+                            id="videoThumb"
+                            src=""
+                            alt="Thumbnail Preview"
+                            class="video-thumbnail">
+
+
+                        <span
+                            id="videoDuration"
+                            class="duration-badge">
+
+                            00:00
+
+                        </span>
+
+                    </div>
+
+
+
+                    <div class="video-metadata">
+
+                        <h2
+                            id="videoTitle"
+                            class="video-title">
+
+                            Video Title Loading...
+
+                        </h2>
+
+
+                        <div class="meta-tags">
+
+                            <span class="meta-tag channel-tag">
+
+                                <i class="fa-solid fa-user-circle"></i>
+
+                                <span id="videoChannel">
+                                    Uploader
+                                </span>
+
+                            </span>
+
+
+                            <span class="meta-tag views-tag">
+
+                                <i class="fa-solid fa-eye"></i>
+
+                                <span id="videoViews">
+                                    0 views
+                                </span>
+
+                            </span>
+
+
+                            <span class="meta-tag hd-tag">
+
+                                <i class="fa-solid fa-circle-check"></i>
+
+                                HD Ready
+
+                            </span>
+
+                        </div>
+
+                    </div>
+
+                </div>
+
+
+
+                <!-- Format Selection -->
+                <div class="format-selection-wrapper">
+
+                    <div class="format-tabs">
+
+                        <button
+                            class="format-tab active"
+                            data-type="video">
+
+                            <i class="fa-solid fa-video"></i>
+
+                            Video (MP4)
+
+                        </button>
+
+
+                        <button
+                            class="format-tab"
+                            data-type="audio">
+
+                            <i class="fa-solid fa-music"></i>
+
+                            Audio Only (MP3 / M4A)
+
+                        </button>
+
+                    </div>
+
+
+
+                    <!-- Video Qualities -->
+                    <div
+                        id="videoFormatsGrid"
+                        class="formats-grid">
+
+                    </div>
+
+
+
+                    <!-- Audio Qualities -->
+                    <div
+                        id="audioFormatsGrid"
+                        class="formats-grid hidden">
+
+                    </div>
+
+                </div>
+
+
+
+                <!-- Download Action -->
+                <div class="action-footer">
+
+                    <div class="selected-summary">
+
+                        <span>
+
+                            Selected Format:
+
+                            <strong id="selectedFormatLabel">
+                                1080p Full HD (MP4)
+                            </strong>
+
+                        </span>
+
+                    </div>
+
+
+
+                    <button
+                        id="startDownloadBtn"
+                        class="btn-download-action">
+
+                        <i class="fa-solid fa-cloud-arrow-down"></i>
+
+                        <span>
+                            Start Instant Download
+                        </span>
+
+                    </button>
+
+                </div>
+
+
+
+                <!-- Download Progress -->
+                <div
+                    id="downloadProgressBox"
+                    class="progress-box hidden">
+
+                    <div class="progress-header">
+
+                        <span
+                            id="progressStatusText"
+                            class="progress-status">
+
+                            <i class="fa-solid fa-gear fa-spin"></i>
+
+                            Processing media on server...
+
+                        </span>
+
+
+                        <span
+                            id="progressPercent"
+                            class="progress-percent">
+
+                            0%
+
+                        </span>
+
+                    </div>
+
+
+
+                    <div class="progress-bar-track">
+
+                        <div
+                            id="progressBarFill"
+                            class="progress-bar-fill">
+                        </div>
+
+                    </div>
+
+
+                    <p class="progress-subnote">
+
+                        Your download will trigger automatically once processed.
+
+                    </p>
+
+                </div>
+
+            </div>
+
+        </section>
+
+
+
+        <!-- Features Section -->
+        <section
+            id="features"
+            class="features-section">
+
+            <div class="section-header">
+
+                <h2 class="section-title">
+
+                    Engineered for
+
+                    <span class="gradient-text">
+                        Speed & Quality
+                    </span>
+
+                </h2>
+
+
+                <p class="section-subtitle">
+
+                    Experience smooth, buffer-free downloads with our advanced media processor.
+
+                </p>
+
+            </div>
+
+
+
+            <div class="features-grid">
+
+
+                <div class="feature-card">
+
+                    <div class="feature-icon">
+
+                        <i class="fa-solid fa-gauge-max"></i>
+
+                    </div>
+
+                    <h3>
+                        Blazing Fast Serverless Stream
+                    </h3>
+
+                    <p>
+                        Optimized backend pipeline streams your requested quality directly in real-time chunks without lag.
+                    </p>
+
+                </div>
+
+
+
+                <div class="feature-card">
+
+                    <div class="feature-icon">
+
+                        <i class="fa-solid fa-photo-film"></i>
+
+                    </div>
+
+                    <h3>
+                        Crisp 1080p & 4K Merging
+                    </h3>
+
+                    <p>
+                        Uses dedicated FFmpeg multiplexers to combine isolated HD video streams with crystal-clear audio.
+                    </p>
+
+                </div>
+
+
+
+                <div class="feature-card">
+
+                    <div class="feature-icon">
+
+                        <i class="fa-solid fa-headphones"></i>
+
+                    </div>
+
+                    <h3>
+                        Studio Quality 320kbps MP3
+                    </h3>
+
+                    <p>
+                        Convert music videos, podcasts, and talks into pristine high-bitrate MP3s with full audio fidelity.
+                    </p>
+
+                </div>
+
+
+
+                <div class="feature-card">
+
+                    <div class="feature-icon">
+
+                        <i class="fa-solid fa-mobile-screen-button"></i>
+
+                    </div>
+
+                    <h3>
+                        Mobile & Tablet Ready
+                    </h3>
+
+                    <p>
+                        Fully responsive fluid layout with native clipboard paste support on iOS, Android, and Desktop.
+                    </p>
+
+                </div>
+
+            </div>
+
+        </section>
+
+
+
+        <!-- FAQ Section -->
+        <section
+            id="faq"
+            class="faq-section">
+
+            <div class="section-header">
+
+                <h2 class="section-title">
+
+                    Frequently Asked
+
+                    <span class="gradient-text">
+                        Questions
+                    </span>
+
+                </h2>
+
+            </div>
+
+
+
+            <div class="faq-accordion">
+
+
+                <div class="faq-item">
+
+                    <button class="faq-question">
+
+                        <span>
+                            Is this video downloader completely free?
+                        </span>
+
+                        <i class="fa-solid fa-chevron-down"></i>
+
+                    </button>
+
+
+                    <div class="faq-answer">
+
+                        <p>
+                            Yes, ProStream is 100% free to use. There are no download limits, hidden subscriptions, or account requirements.
+                        </p>
+
+                    </div>
+
+                </div>
+
+
+
+                <div class="faq-item">
+
+                    <button class="faq-question">
+
+                        <span>
+                            Can I download YouTube Shorts and Instagram Reels?
+                        </span>
+
+                        <i class="fa-solid fa-chevron-down"></i>
+
+                    </button>
+
+
+                    <div class="faq-answer">
+
+                        <p>
+                            Simply paste a supported video URL and our engine will process the available media formats.
+                        </p>
+
+                    </div>
+
+                </div>
+
+
+
+                <div class="faq-item">
+
+                    <button class="faq-question">
+
+                        <span>
+                            Where are downloaded files saved on my device?
+                        </span>
+
+                        <i class="fa-solid fa-chevron-down"></i>
+
+                    </button>
+
+
+                    <div class="faq-answer">
+
+                        <p>
+                            Files are saved directly to your browser's default Downloads folder.
+
+                        </p>
+
+                    </div>
+
+                </div>
+
+            </div>
+
+        </section>
+
+    </main>
+
+
+
+    <!-- History Drawer -->
+    <div
+        id="historyDrawer"
+        class="history-drawer">
+
+        <div
+            class="history-overlay"
+            id="historyOverlay">
+        </div>
+
+
+        <div class="history-panel">
+
+            <div class="history-header">
+
+                <div class="history-title">
+
+                    <i class="fa-solid fa-clock-rotate-left"></i>
+
+                    <h3>
+                        Recent Downloads
+                    </h3>
+
+                </div>
+
+
+                <div class="history-actions">
+
+                    <button
+                        id="clearHistoryBtn"
+                        class="btn-clear-history"
+                        title="Clear all history">
+
+                        Clear All
+
+                    </button>
+
+
+                    <button
+                        id="closeHistoryBtn"
+                        class="btn-close-drawer">
+
+                        <i class="fa-solid fa-xmark"></i>
+
+                    </button>
+
+                </div>
+
+            </div>
+
+
+
+            <div
+                id="historyList"
+                class="history-list">
+
+                <!-- Dynamically populated from localStorage -->
+
+            </div>
+
+        </div>
+
+    </div>
+
+
+
+    <!-- Toast Notification -->
+    <div
+        id="toastContainer"
+        class="toast-container">
+    </div>
+
+
+
+    <!-- Footer -->
+    <footer class="footer">
+
+        <div class="footer-container">
+
+            <div class="footer-brand">
+
+                <div class="logo-icon small">
+
+                    <i class="fa-solid fa-bolt"></i>
+
+                </div>
+
+                <span>
+                    ProStream Media Engine
+                </span>
+
+            </div>
+
+
+            <p class="footer-copy">
+
+                © 2026 ProStream. High-speed media processing system.
+                For educational & personal backup use.
+
+            </p>
+
+        </div>
+
+    </footer>
+
+
+
+    <!-- =========================================================
+         Google reCAPTCHA Enterprise
+         (COMMENTED for local/dev — uncomment for production)
+         ========================================================= -->
+
+    <!--
+    <script>
+
+        const RECAPTCHA_SITE_KEY =
+            "6LdZC6UtAAAAANXdxkFgR8kytF7NunawaiLYZMtQ";
+
+        /**
+         * Generate Enterprise reCAPTCHA token
+         *
+         * This function can be called before sending
+         * the request to your Python backend.
+         */
+        async function getRecaptchaToken() {
+
+            try {
+
+                await new Promise((resolve) => {
+
+                    grecaptcha.enterprise.ready(resolve);
+
+                });
+
+
+                const token =
+                    await grecaptcha.enterprise.execute(
+                        RECAPTCHA_SITE_KEY,
+                        {
+                            action: "download"
+                        }
+                    );
+
+
+                if (!token) {
+
+                    throw new Error(
+                        "reCAPTCHA token was not generated."
+                    );
+
+                }
+
+
+                return token;
+
+            } catch (error) {
+
+                console.error(
+                    "reCAPTCHA Enterprise error:",
+                    error
+                );
+
+                throw error;
+
+            }
+
+        }
+
+
+        /*
+         * Submit handler
+         *
+         * IMPORTANT:
+         * Your existing app.js may already have a submit
+         * event listener. In that case, don't create a
+         * second submit listener here.
+         *
+         * Instead, call:
+         *
+         * const recaptchaToken = await getRecaptchaToken();
+         *
+         * inside your existing app.js submit function.
+         */
+
+    </script>
+    -->
+
+
+
+    <!-- App JavaScript -->
+    <script src="/static/js/app.js"></script>
+
+
+</body>
+
+</html>
