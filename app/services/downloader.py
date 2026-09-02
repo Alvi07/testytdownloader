@@ -6,7 +6,7 @@ from typing import Dict, Any, List, Optional
 
 import yt_dlp
 
-from app.config import DOWNLOADS_DIR, DEFAULT_USER_AGENT, COOKIES_FILE
+from app.config import DOWNLOADS_DIR, DEFAULT_USER_AGENT, COOKIES_FILE, PROXY_URL
 from app.utils.helpers import (
     format_bytes,
     format_duration,
@@ -66,6 +66,10 @@ def _build_ydl_opts(extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         opts.pop("user_agent", None)
     else:
         opts["user_agent"] = DEFAULT_USER_AGENT
+
+    if PROXY_URL:
+        opts["proxy"] = PROXY_URL
+
     return opts
 
 

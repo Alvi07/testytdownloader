@@ -14,3 +14,8 @@ services:
       # Do NOT commit cookies to git.
       - key: YOUTUBE_COOKIES_BASE64
         sync: false
+      # Optional residential/mobile proxy for YouTube downloads on Render:
+      # http://user:pass@host:port  OR  socks5://user:pass@host:port
+      # Free public proxies usually fail for YouTube.
+      - key: YOUTUBE_PROXY
+        sync: false

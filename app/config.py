@@ -71,3 +71,31 @@ def resolve_cookies_file() -> Path | None:
 
 
 COOKIES_FILE = resolve_cookies_file()
+
+
+def resolve_proxy_url() -> str | None:
+    """
+    Optional HTTP(S)/SOCKS proxy for yt-dlp (needed on cloud IPs like Render).
+
+    Env (first match wins):
+      YOUTUBE_PROXY, PROXY_URL, HTTPS_PROXY, HTTP_PROXY
+
+    Examples:
+      http://user:pass@host:8000
+      socks5://user:pass@host:1080
+
+    Free public proxies almost never work for YouTube long-term.
+    Use a residential / mobile proxy provider for reliable downloads.
+    """
+    for key in ("YOUTUBE_PROXY", "PROXY_URL", "HTTPS_PROXY", "HTTP_PROXY"):
+        value = os.environ.get(key, "").strip()
+        if value:
+            return value
+    return None
+
+
+PROXY_URL = resolve_proxy_url()
+
+
+def proxy_is_configured() -> bool:
+    return bool(PROXY_URL)
