@@ -181,7 +181,17 @@ async def download_file(
         )
     except Exception as e:
         logger.error(f"Download error for {url}: {e}")
-        raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
+        error_msg = str(e)
+        if "not a bot" in error_msg.lower() or "Use --cookies" in error_msg or "Sign in to confirm" in error_msg:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "YouTube blocked the download step (bot check). "
+                    "Analyze can work while download needs stronger cookies/session. "
+                    "Export FRESH YouTube cookies, update YOUTUBE_COOKIES_BASE64, restart the service."
+                ),
+            )
+        raise HTTPException(status_code=500, detail=f"Download failed: {error_msg}")
 
 
 # Serve Frontend Static Assets

@@ -25,10 +25,9 @@ BASE_YTDL_OPTS: Dict[str, Any] = {
     "quiet": True,
     "no_warnings": True,
     "noplaylist": True,
-    "user_agent": DEFAULT_USER_AGENT,
     "nocheckcertificate": True,
     "geo_bypass": True,
-    "socket_timeout": 30,
+    "socket_timeout": 60,
     # YouTube now requires a JS runtime + EJS challenge solver (Deno)
     "js_runtimes": {"deno": {}},
     "remote_components": ["ejs:github"],
@@ -46,7 +45,21 @@ def _build_ydl_opts(extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     opts: Dict[str, Any] = {**BASE_YTDL_OPTS, **(extra or {})}
     if COOKIES_FILE is not None:
         opts["cookiefile"] = str(COOKIES_FILE)
+        # Custom UA + browser cookies often triggers YouTube bot checks on download
+        opts.pop("user_agent", None)
+    else:
+        opts["user_agent"] = DEFAULT_USER_AGENT
     return opts
+
+
+def _is_bot_block_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return (
+        "not a bot" in msg
+        or "use --cookies" in msg
+        or "sign in to confirm" in msg
+        or "cookies are no longer valid" in msg
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -511,12 +524,12 @@ def _download_sync(
 
         ydl_opts.update({
 
+            # Prefer progressive "best" first — merge formats need harder JS/PO auth
             "format": (
-                f"bestvideo[height<={height}][ext=mp4]"
-                "+bestaudio[ext=m4a]"
-                f"/bestvideo[height<={height}]"
-                "+bestaudio"
+                f"best[height<={height}][ext=mp4]"
                 f"/best[height<={height}]"
+                f"/bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]"
+                f"/bestvideo[height<={height}]+bestaudio"
                 "/bestvideo+bestaudio"
                 "/best"
             ),
@@ -530,24 +543,58 @@ def _download_sync(
 
 
     # -----------------------------------------------------------------------
-    # DOWNLOAD
+    # DOWNLOAD (retry with alternate YouTube clients if bot-blocked)
     # -----------------------------------------------------------------------
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+    client_attempts = [
+        ["web", "mweb", "android"],
+        ["mweb", "web"],
+        ["android", "web"],
+        ["tv_embedded", "web"],
+    ]
 
-        info = ydl.extract_info(
-            url,
-            download=True,
-        )
+    last_error: Optional[Exception] = None
+    info: Optional[Dict[str, Any]] = None
 
-        raw_title = info.get(
-            "title",
-            "download",
-        )
+    for clients in client_attempts:
+        attempt_opts = dict(ydl_opts)
+        attempt_opts["extractor_args"] = {
+            "youtube": {"player_client": clients}
+        }
+        if COOKIES_FILE is not None:
+            attempt_opts["cookiefile"] = str(COOKIES_FILE)
+            attempt_opts.pop("user_agent", None)
 
-        sanitized_title = sanitize_filename(
-            raw_title
-        )
+        try:
+            logger.info("Download attempt with player_client=%s", clients)
+            with yt_dlp.YoutubeDL(attempt_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+            if info:
+                break
+        except Exception as exc:
+            last_error = exc
+            logger.warning(
+                "Download attempt failed (%s): %s",
+                clients,
+                exc,
+            )
+            if not _is_bot_block_error(exc) and "format is not available" not in str(exc).lower():
+                raise
+            continue
+
+    if not info:
+        if last_error:
+            raise last_error
+        raise RuntimeError("Download failed: no media returned.")
+
+    raw_title = info.get(
+        "title",
+        "download",
+    )
+
+    sanitized_title = sanitize_filename(
+        raw_title
+    )
 
 
     # -----------------------------------------------------------------------
