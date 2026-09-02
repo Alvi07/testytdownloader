@@ -432,67 +432,38 @@ document.addEventListener('DOMContentLoaded', () => {
                 throw new Error(detail);
             }
 
-            const contentType = (response.headers.get('content-type') || '').toLowerCase();
+            // STEP 5: Always save as a local file (direct yt-dlp OR proxied Invidious stream)
+            progressStatusText.innerHTML = '<i class="fa-solid fa-floppy-disk fa-spin"></i> Saving to device...';
+            progressBarFill.style.width = '85%';
+            progressPercent.textContent = '85%';
 
-            // External mirror mode (Invidious/Piped) — browser downloads, not Render
-            if (contentType.includes('application/json')) {
-                const data = await response.json();
-                if (!data.success || !data.download_url) {
-                    throw new Error(data.detail || 'External download link unavailable.');
-                }
-
-                progressStatusText.innerHTML = '<i class="fa-solid fa-circle-check" style="color: #10b981;"></i> Opening download link...';
-                progressBarFill.style.width = '100%';
-                progressPercent.textContent = '100%';
-
-                const a = document.createElement('a');
-                a.href = data.download_url;
-                a.target = '_blank';
-                a.rel = 'noopener noreferrer';
-                if (data.filename) {
-                    a.download = data.filename;
-                }
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-
-                showToast(
-                    data.provider
-                        ? `Download started via ${data.provider}`
-                        : 'Download link opened',
-                    'success'
-                );
-
-                saveToHistory({
-                    title: currentVideoData.title,
-                    thumbnail: currentVideoData.thumbnail,
-                    url: currentVideoData.webpage_url,
-                    format: selectedFormat.label,
-                    timestamp: new Date().toLocaleString()
-                });
-
-                setTimeout(() => {
-                    startDownloadBtn.disabled = false;
-                    downloadProgressBox.classList.add('hidden');
-                    isProcessing = false;
-                }, 3000);
-                return;
+            const blob = await response.blob();
+            if (!blob || blob.size < 1024) {
+                // Tiny/empty body usually means an HTML error page leaked through
+                throw new Error('Download file was empty. Please try another quality.');
             }
 
-            // STEP 5: Backend streams the file — save as browser download
-            const blob = await response.blob();
-
-            let filename = 'download';
+            let filename = 'download.mp4';
             const disposition = response.headers.get('Content-Disposition') || '';
+            const filenameStar = disposition.match(/filename\*=UTF-8''([^;]+)/i);
             const filenameMatch = disposition.match(/filename="?([^";]+)"?/i);
-            if (filenameMatch && filenameMatch[1]) {
+            if (filenameStar && filenameStar[1]) {
+                try {
+                    filename = decodeURIComponent(filenameStar[1]);
+                } catch (_) {
+                    filename = filenameStar[1];
+                }
+            } else if (filenameMatch && filenameMatch[1]) {
                 filename = filenameMatch[1];
             } else {
                 const ext = selectedFormat.type === 'audio' ? 'mp3' : 'mp4';
                 filename = `${(currentVideoData.title || 'video').slice(0, 80)}.${ext}`;
             }
 
-            progressStatusText.innerHTML = '<i class="fa-solid fa-circle-check" style="color: #10b981;"></i> Download ready!';
+            const mode = response.headers.get('X-Download-Mode') || 'direct';
+            const provider = response.headers.get('X-Download-Provider') || '';
+
+            progressStatusText.innerHTML = '<i class="fa-solid fa-circle-check" style="color: #10b981;"></i> Saved! Check your Downloads folder.';
             progressBarFill.style.width = '100%';
             progressPercent.textContent = '100%';
 
@@ -503,9 +474,14 @@ document.addEventListener('DOMContentLoaded', () => {
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
-            URL.revokeObjectURL(blobUrl);
+            setTimeout(() => URL.revokeObjectURL(blobUrl), 2000);
 
-            showToast(`Download started: ${filename}`, 'success');
+            showToast(
+                provider
+                    ? `Saved: ${filename} (via ${provider})`
+                    : `Saved to Downloads: ${filename}`,
+                'success'
+            );
 
             // Save to history
             saveToHistory({
@@ -521,6 +497,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 downloadProgressBox.classList.add('hidden');
                 isProcessing = false;
             }, 3000);
+
+            // keep mode referenced for debugging
+            console.log('Download complete:', { mode, provider, filename, bytes: blob.size });
+            return;
 
         } catch (err) {
             progressStatusText.innerHTML = `<i class="fa-solid fa-circle-exclamation" style="color: #ef4444;"></i> ${err.message}`;

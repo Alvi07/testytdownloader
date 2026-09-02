@@ -1,4 +1,5 @@
 import os
+import re
 import asyncio
 import logging
 from contextlib import asynccontextmanager
@@ -8,8 +9,10 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, HttpUrl
+import httpx
+from urllib.parse import quote
 
 from app.config import (
     APP_TITLE,
@@ -168,13 +171,13 @@ async def download_file(
     quality: str = Query("720p", description="Quality format (e.g. 1080p, 720p, mp3_320, m4a_best)")
 ):
     """
-    Download media.
+    Download media and force a local browser save.
 
     Strategy:
-      1) Try yt-dlp on this server (works on home networks / unblocked IPs).
-      2) If YouTube CDN/bot-blocks the cloud IP, resolve an Invidious/Piped
-         URL and return JSON so the *browser* downloads it (Render never
-         pulls googlevideo bytes).
+      1) Try yt-dlp on this server.
+      2) If YouTube CDN/bot-blocks us, resolve Invidious/Piped URL and
+         *proxy-stream* it through this API with Content-Disposition:attachment
+         so the file saves locally (not just open in a new tab).
     """
     if not is_valid_url(url):
         raise HTTPException(status_code=400, detail="Invalid target URL.")
@@ -194,7 +197,7 @@ async def download_file(
             media_type=content_type,
             headers={
                 "Content-Disposition": f'attachment; filename="{filename}"',
-                "Access-Control-Expose-Headers": "Content-Disposition",
+                "Access-Control-Expose-Headers": "Content-Disposition, X-Download-Mode, X-Download-Provider",
                 "X-Download-Mode": "direct",
             }
         )
@@ -202,31 +205,78 @@ async def download_file(
         logger.warning("Direct yt-dlp download failed for %s: %s", url, e)
         direct_error = str(e)
 
-    # --- Path B: external resolver (browser-side download) ---
+    # --- Path B: Invidious/Piped → stream through us → local save ---
     if extract_youtube_id(url):
         try:
             external = await resolve_external_download(url, format_type, quality)
             if external and external.get("url"):
+                stream_url = external["url"]
+                filename = sanitize_download_name(
+                    external.get("filename") or f"video_{quality}.mp4"
+                )
+                provider = external.get("provider") or "external"
+                media_type = (
+                    "audio/mp4"
+                    if format_type == "audio"
+                    else "video/mp4"
+                )
+
                 logger.info(
-                    "Using external download via %s for %s",
-                    external.get("provider"),
+                    "Proxy-streaming external download via %s for %s",
+                    provider,
                     url,
                 )
-                return JSONResponse(
-                    {
-                        "success": True,
-                        "mode": "external",
-                        "download_url": external["url"],
-                        "filename": external.get("filename") or "video.mp4",
-                        "provider": external.get("provider"),
-                        "note": (
-                            "Cloud IP was blocked by YouTube CDN; "
-                            "opening an Invidious/Piped link in your browser instead."
-                        ),
-                    }
+
+                client = httpx.AsyncClient(
+                    timeout=httpx.Timeout(180.0, connect=20.0),
+                    follow_redirects=True,
+                    headers={"User-Agent": "ProStream/1.0"},
+                )
+                req = client.build_request("GET", stream_url)
+                upstream = await client.send(req, stream=True)
+
+                if upstream.status_code >= 400:
+                    await upstream.aclose()
+                    await client.aclose()
+                    raise RuntimeError(
+                        f"External mirror returned HTTP {upstream.status_code}"
+                    )
+
+                upstream_type = upstream.headers.get("content-type")
+                if upstream_type and "text/html" not in upstream_type:
+                    media_type = upstream_type.split(";")[0].strip()
+
+                async def file_iterator():
+                    try:
+                        async for chunk in upstream.aiter_bytes(64 * 1024):
+                            yield chunk
+                    finally:
+                        await upstream.aclose()
+                        await client.aclose()
+
+                headers = {
+                    "Content-Disposition": (
+                        f"attachment; filename=\"{filename}\"; "
+                        f"filename*=UTF-8''{quote(filename)}"
+                    ),
+                    "Access-Control-Expose-Headers": (
+                        "Content-Disposition, X-Download-Mode, X-Download-Provider"
+                    ),
+                    "X-Download-Mode": "external-proxy",
+                    "X-Download-Provider": provider,
+                    "Cache-Control": "no-store",
+                }
+                content_length = upstream.headers.get("content-length")
+                if content_length:
+                    headers["Content-Length"] = content_length
+
+                return StreamingResponse(
+                    file_iterator(),
+                    media_type=media_type,
+                    headers=headers,
                 )
         except Exception as ext_err:
-            logger.error("External resolver failed for %s: %s", url, ext_err)
+            logger.error("External resolver/stream failed for %s: %s", url, ext_err)
 
     # Both paths failed
     if (
@@ -244,6 +294,12 @@ async def download_file(
             ),
         )
     raise HTTPException(status_code=500, detail=f"Download failed: {direct_error}")
+
+
+def sanitize_download_name(name: str) -> str:
+    """Keep filenames safe for Content-Disposition."""
+    cleaned = re.sub(r'[\\/:*?"<>|]+', "_", name).strip() or "download.mp4"
+    return cleaned[:180]
 
 
 # Serve Frontend Static Assets
