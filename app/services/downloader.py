@@ -2,11 +2,11 @@ import asyncio
 import uuid
 import logging
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 import yt_dlp
 
-from app.config import DOWNLOADS_DIR, DEFAULT_USER_AGENT
+from app.config import DOWNLOADS_DIR, DEFAULT_USER_AGENT, COOKIES_FILE
 from app.utils.helpers import (
     format_bytes,
     format_duration,
@@ -29,7 +29,21 @@ BASE_YTDL_OPTS: Dict[str, Any] = {
     "nocheckcertificate": True,
     "geo_bypass": True,
     "socket_timeout": 30,
+    # Helps on some cloud IPs; cookies are still required on Render for YouTube
+    "extractor_args": {
+        "youtube": {
+            "player_client": ["android", "web"],
+        }
+    },
 }
+
+
+def _build_ydl_opts(extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Merge base opts with optional extras and cookies file when available."""
+    opts: Dict[str, Any] = {**BASE_YTDL_OPTS, **(extra or {})}
+    if COOKIES_FILE is not None:
+        opts["cookiefile"] = str(COOKIES_FILE)
+    return opts
 
 
 # ---------------------------------------------------------------------------
@@ -39,11 +53,10 @@ BASE_YTDL_OPTS: Dict[str, Any] = {
 def _extract_info_sync(url: str) -> Dict[str, Any]:
     """Synchronously extract metadata using yt-dlp without downloading."""
 
-    ydl_opts = {
-        **BASE_YTDL_OPTS,
+    ydl_opts = _build_ydl_opts({
         "extract_flat": False,
         "skip_download": True,
-    }
+    })
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(
@@ -391,10 +404,9 @@ def _download_sync(
         / f"{session_id}_%(title)s.%(ext)s"
     )
 
-    ydl_opts: Dict[str, Any] = {
-        **BASE_YTDL_OPTS,
+    ydl_opts: Dict[str, Any] = _build_ydl_opts({
         "outtmpl": out_template,
-    }
+    })
 
     target_ext = "mp4"
 

@@ -16,4 +16,7 @@ temp_downloads/
 *.ytdl
 .DS_Store
 Thumbs.db
+.runtime_cookies.txt
 cookies.txt
+cookes.txt
+cookies.b64.txt

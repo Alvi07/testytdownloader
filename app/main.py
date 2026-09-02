@@ -16,6 +16,7 @@ from app.config import (
     APP_DESCRIPTION,
     STATIC_DIR,
     DOWNLOADS_DIR,
+    COOKIES_FILE,
 )
 from app.services.downloader import get_video_info, download_media
 from app.services.cleaner import start_periodic_cleaner, cleanup_stale_files
@@ -33,6 +34,13 @@ logger = logging.getLogger("main")
 async def lifespan(app: FastAPI):
     """Application lifespan manager for background tasks."""
     logger.info("Starting up downloader service...")
+    if COOKIES_FILE:
+        logger.info("YouTube cookies loaded from: %s", COOKIES_FILE)
+    else:
+        logger.warning(
+            "No YouTube cookies found. Cloud hosts (Render) usually need "
+            "COOKIES_FILE or YOUTUBE_COOKIES_BASE64 to avoid bot checks."
+        )
     cleanup_stale_files()
     cleaner_task = asyncio.create_task(start_periodic_cleaner())
     yield
@@ -80,7 +88,12 @@ def delete_temp_file(file_path: str):
 @app.get("/api/health")
 async def health_check():
     """Health check endpoint for Render and uptime monitoring."""
-    return {"status": "ok", "app": APP_TITLE, "version": "1.0.0"}
+    return {
+        "status": "ok",
+        "app": APP_TITLE,
+        "version": "1.0.0",
+        "cookies_loaded": COOKIES_FILE is not None,
+    }
 
 
 @app.post("/api/info")
@@ -100,6 +113,15 @@ async def fetch_info(payload: VideoInfoRequest):
             raise HTTPException(status_code=404, detail="The video is private, removed, or unavailable.")
         if "Sign in to confirm your age" in error_msg:
             raise HTTPException(status_code=403, detail="Age-restricted content cannot be retrieved directly.")
+        if "not a bot" in error_msg.lower() or "Use --cookies" in error_msg:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "YouTube bot check blocked this request. "
+                    "On Render, set YOUTUBE_COOKIES_BASE64 (or COOKIES_FILE) "
+                    "with a fresh cookies.txt from a logged-in browser."
+                ),
+            )
         raise HTTPException(status_code=500, detail=f"Failed to analyze video: {error_msg}")
 
 

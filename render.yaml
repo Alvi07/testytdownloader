@@ -9,3 +9,8 @@ services:
     envVars:
       - key: PORT
         value: 10000
+      # Required for YouTube on Render (bot check). Set in Render Dashboard:
+      # Environment → YOUTUBE_COOKIES_BASE64 = base64 of your cookies.txt
+      # Do NOT commit cookies to git.
+      - key: YOUTUBE_COOKIES_BASE64
+        sync: false
