@@ -432,6 +432,53 @@ document.addEventListener('DOMContentLoaded', () => {
                 throw new Error(detail);
             }
 
+            const contentType = (response.headers.get('content-type') || '').toLowerCase();
+
+            // External mirror mode (Invidious/Piped) — browser downloads, not Render
+            if (contentType.includes('application/json')) {
+                const data = await response.json();
+                if (!data.success || !data.download_url) {
+                    throw new Error(data.detail || 'External download link unavailable.');
+                }
+
+                progressStatusText.innerHTML = '<i class="fa-solid fa-circle-check" style="color: #10b981;"></i> Opening download link...';
+                progressBarFill.style.width = '100%';
+                progressPercent.textContent = '100%';
+
+                const a = document.createElement('a');
+                a.href = data.download_url;
+                a.target = '_blank';
+                a.rel = 'noopener noreferrer';
+                if (data.filename) {
+                    a.download = data.filename;
+                }
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+
+                showToast(
+                    data.provider
+                        ? `Download started via ${data.provider}`
+                        : 'Download link opened',
+                    'success'
+                );
+
+                saveToHistory({
+                    title: currentVideoData.title,
+                    thumbnail: currentVideoData.thumbnail,
+                    url: currentVideoData.webpage_url,
+                    format: selectedFormat.label,
+                    timestamp: new Date().toLocaleString()
+                });
+
+                setTimeout(() => {
+                    startDownloadBtn.disabled = false;
+                    downloadProgressBox.classList.add('hidden');
+                    isProcessing = false;
+                }, 3000);
+                return;
+            }
+
             // STEP 5: Backend streams the file — save as browser download
             const blob = await response.blob();
 

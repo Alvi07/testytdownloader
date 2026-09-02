@@ -17,8 +17,10 @@ from app.config import (
     STATIC_DIR,
     DOWNLOADS_DIR,
     COOKIES_FILE,
+    PROXY_URL,
 )
 from app.services.downloader import get_video_info, download_media
+from app.services.external_streams import resolve_external_download, extract_youtube_id
 from app.services.cleaner import start_periodic_cleaner, cleanup_stale_files
 from app.utils.helpers import is_valid_url
 
@@ -40,6 +42,15 @@ async def lifespan(app: FastAPI):
         logger.warning(
             "No YouTube cookies found. Cloud hosts (Render) usually need "
             "COOKIES_FILE or YOUTUBE_COOKIES_BASE64 to avoid bot checks."
+        )
+    if PROXY_URL:
+        # Do not log credentials — only scheme/host-ish hint
+        safe = PROXY_URL.split("@")[-1] if "@" in PROXY_URL else PROXY_URL
+        logger.info("Outbound proxy enabled for yt-dlp: %s", safe)
+    else:
+        logger.warning(
+            "No YOUTUBE_PROXY/PROXY_URL set. Free Render IPs are often blocked "
+            "by YouTube CDN for downloads; a residential proxy is recommended."
         )
     cleanup_stale_files()
     cleaner_task = asyncio.create_task(start_periodic_cleaner())
@@ -93,6 +104,8 @@ async def health_check():
         "app": APP_TITLE,
         "version": "1.0.0",
         "cookies_loaded": COOKIES_FILE is not None,
+        "proxy_configured": PROXY_URL is not None,
+        "external_fallback": True,
     }
 
 
@@ -155,21 +168,26 @@ async def download_file(
     quality: str = Query("720p", description="Quality format (e.g. 1080p, 720p, mp3_320, m4a_best)")
 ):
     """
-    Download the requested video or audio file and stream it directly to the user.
-    File is cleaned up immediately after transmission.
+    Download media.
+
+    Strategy:
+      1) Try yt-dlp on this server (works on home networks / unblocked IPs).
+      2) If YouTube CDN/bot-blocks the cloud IP, resolve an Invidious/Piped
+         URL and return JSON so the *browser* downloads it (Render never
+         pulls googlevideo bytes).
     """
     if not is_valid_url(url):
         raise HTTPException(status_code=400, detail="Invalid target URL.")
-        
+
+    # --- Path A: direct yt-dlp on server ---
     try:
         result = await download_media(url, format_type, quality)
         file_path = result["file_path"]
         filename = result["filename"]
         content_type = result["content_type"]
-        
-        # Schedule cleanup after response finishes sending
+
         background_tasks.add_task(delete_temp_file, file_path)
-        
+
         return FileResponse(
             path=file_path,
             filename=filename,
@@ -177,27 +195,55 @@ async def download_file(
             headers={
                 "Content-Disposition": f'attachment; filename="{filename}"',
                 "Access-Control-Expose-Headers": "Content-Disposition",
+                "X-Download-Mode": "direct",
             }
         )
     except Exception as e:
-        logger.error(f"Download error for {url}: {e}")
-        error_msg = str(e)
-        if (
-            "not a bot" in error_msg.lower()
-            or "Use --cookies" in error_msg
-            or "Sign in to confirm" in error_msg
-            or "HTTP Error 403" in error_msg
-            or "403: Forbidden" in error_msg
-        ):
-            raise HTTPException(
-                status_code=403,
-                detail=(
-                    "YouTube blocked media download from this cloud IP (bot check / CDN 403). "
-                    "Analyze can succeed while download fails on free Render. "
-                    "Try fresh cookies, or run downloads from a home PC / residential proxy."
-                ),
-            )
-        raise HTTPException(status_code=500, detail=f"Download failed: {error_msg}")
+        logger.warning("Direct yt-dlp download failed for %s: %s", url, e)
+        direct_error = str(e)
+
+    # --- Path B: external resolver (browser-side download) ---
+    if extract_youtube_id(url):
+        try:
+            external = await resolve_external_download(url, format_type, quality)
+            if external and external.get("url"):
+                logger.info(
+                    "Using external download via %s for %s",
+                    external.get("provider"),
+                    url,
+                )
+                return JSONResponse(
+                    {
+                        "success": True,
+                        "mode": "external",
+                        "download_url": external["url"],
+                        "filename": external.get("filename") or "video.mp4",
+                        "provider": external.get("provider"),
+                        "note": (
+                            "Cloud IP was blocked by YouTube CDN; "
+                            "opening an Invidious/Piped link in your browser instead."
+                        ),
+                    }
+                )
+        except Exception as ext_err:
+            logger.error("External resolver failed for %s: %s", url, ext_err)
+
+    # Both paths failed
+    if (
+        "not a bot" in direct_error.lower()
+        or "Use --cookies" in direct_error
+        or "Sign in to confirm" in direct_error
+        or "HTTP Error 403" in direct_error
+        or "403: Forbidden" in direct_error
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "YouTube blocked server download and no working Invidious/Piped "
+                "mirror was found. Try again later, or run the app locally."
+            ),
+        )
+    raise HTTPException(status_code=500, detail=f"Download failed: {direct_error}")
 
 
 # Serve Frontend Static Assets
