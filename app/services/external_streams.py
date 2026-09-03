@@ -44,6 +44,8 @@ _DEFAULT_PIPED = [
     "https://api.piped.private.coffee",
     "https://pipedapi.kavin.rocks",
     "https://pipedapi.adminforge.de",
+    "https://pipedapi.darkness.services",
+    "https://pipedapi.reallyaweso.me",
     "https://pipedapi.syncpundit.io",
     "https://pipedapi.leptons.xyz",
 ]
@@ -124,10 +126,48 @@ def looks_like_media(data: bytes) -> bool:
     return False
 
 
+def media_request_headers(url: str) -> Dict[str, str]:
+    """
+    Headers required by Piped/Invidious proxy CDNs.
+    Opening proxy.piped.* in a bare browser tab often 403s without Referer —
+    server-side fetches must send these so the MP4 can be saved for the user.
+    """
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        ),
+        "Accept": "*/*",
+    }
+    host = (urlparse(url).hostname or "").lower()
+    if "piped" in host:
+        # Match the Piped frontend so proxy.piped.* authorizes the request
+        if "private.coffee" in host:
+            origin = "https://piped.private.coffee"
+        elif "kavin.rocks" in host:
+            origin = "https://piped.kavin.rocks"
+        elif "adminforge.de" in host:
+            origin = "https://piped.adminforge.de"
+        else:
+            origin = "https://piped.video"
+        headers["Referer"] = f"{origin}/"
+        headers["Origin"] = origin
+    elif "invidious" in host or host in {
+        "yewtu.be",
+        "inv.nadeko.net",
+        "yt.chocolatemoo53.com",
+    }:
+        origin = f"https://{host}"
+        headers["Referer"] = f"{origin}/"
+        headers["Origin"] = origin
+    return headers
+
+
 async def _probe_media_url(client: httpx.AsyncClient, url: str) -> bool:
     """Confirm URL returns real media bytes (not HTML error). 206 Partial is OK."""
     try:
-        r = await client.get(url, headers={"Range": "bytes=0-1023"}, follow_redirects=True)
+        headers = {**media_request_headers(url), "Range": "bytes=0-1023"}
+        r = await client.get(url, headers=headers, follow_redirects=True)
         if r.status_code >= 400:
             return False
         ctype = (r.headers.get("content-type") or "").lower()
@@ -181,6 +221,70 @@ async def resolve_via_invidious(
     return None
 
 
+def _piped_stream_candidates(
+    data: Dict[str, Any],
+    api: str,
+    video_id: str,
+    format_type: str,
+    quality: str,
+) -> List[Dict[str, Any]]:
+    """Build ranked progressive Piped stream dicts from /streams JSON."""
+    height = _quality_height(quality)
+    out: List[Dict[str, Any]] = []
+
+    if format_type == "audio":
+        streams = data.get("audioStreams") or []
+        streams = [
+            s for s in streams
+            if (s.get("mimeType") or "").startswith(("audio/mp4", "audio/m4a", "audio/webm"))
+        ]
+        streams = sorted(streams, key=lambda s: s.get("bitrate") or 0, reverse=True)
+        ext = "m4a"
+    else:
+        streams = data.get("videoStreams") or []
+        streams = [
+            s for s in streams
+            if not s.get("videoOnly")
+            and "mpegurl" not in (s.get("mimeType") or "").lower()
+            and (
+                (s.get("mimeType") or "").startswith("video/mp4")
+                or "mp4" in (s.get("url") or "")
+            )
+        ]
+
+        def score(s: Dict[str, Any]) -> tuple:
+            q = str(s.get("quality") or s.get("qualityLabel") or "0")
+            digits = re.sub(r"\D", "", q) or "0"
+            h = int(digits) if digits.isdigit() else 0
+            url = s.get("url") or ""
+            is_proxy = 1 if ("proxy.piped" in url or "/videoplayback" in url) else 0
+            is_odycdn = 1 if "odycdn.com" in url else 0
+            return (is_proxy, -is_odycdn, -abs(h - height) if h else -999, h)
+
+        streams = sorted(streams, key=score, reverse=True)
+        ext = "mp4"
+
+    for s in streams:
+        stream_url = s.get("url")
+        if not stream_url:
+            continue
+        if "odycdn.com" in stream_url and "proxy.piped" not in stream_url:
+            continue
+        qlabel = str(s.get("quality") or s.get("qualityLabel") or quality)
+        out.append(
+            {
+                "url": stream_url,
+                "provider": f"piped:{urlparse(api).netloc}",
+                "filename": _safe_filename(
+                    video_id, qlabel if re.search(r"\d", qlabel) else quality, ext
+                ),
+                "ext": ext,
+                "content_type": "audio/mp4" if ext == "m4a" else "video/mp4",
+            }
+        )
+    return out
+
+
 async def resolve_via_piped(
     video_id: str,
     format_type: str,
@@ -189,7 +293,6 @@ async def resolve_via_piped(
 ) -> Optional[Dict[str, Any]]:
     """Prefer Piped *proxy* progressive MP4 URLs (playable single files)."""
     apis = _instance_list("PIPED_API_INSTANCES", _DEFAULT_PIPED)
-    height = _quality_height(quality)
     timeout = httpx.Timeout(18.0, connect=8.0)
 
     async with httpx.AsyncClient(timeout=timeout, headers={"User-Agent": "Mozilla/5.0"}) as client:
@@ -206,59 +309,52 @@ async def resolve_via_piped(
                 logger.debug("Piped failed %s: %s", api, exc)
                 continue
 
-            if format_type == "audio":
-                streams = data.get("audioStreams") or []
-                streams = [
-                    s for s in streams
-                    if (s.get("mimeType") or "").startswith(("audio/mp4", "audio/m4a", "audio/webm"))
-                ]
-                streams = sorted(streams, key=lambda s: s.get("bitrate") or 0, reverse=True)
-                ext = "m4a"
-            else:
-                streams = data.get("videoStreams") or []
-                streams = [
-                    s for s in streams
-                    if not s.get("videoOnly")
-                    and "mpegurl" not in (s.get("mimeType") or "").lower()
-                    and (
-                        (s.get("mimeType") or "").startswith("video/mp4")
-                        or "mp4" in (s.get("url") or "")
-                    )
-                ]
-
-                def score(s: Dict[str, Any]) -> tuple:
-                    q = str(s.get("quality") or s.get("qualityLabel") or "0")
-                    digits = re.sub(r"\D", "", q) or "0"
-                    h = int(digits) if digits.isdigit() else 0
-                    url = s.get("url") or ""
-                    is_proxy = 1 if ("proxy.piped" in url or "/videoplayback" in url) else 0
-                    is_odycdn = 1 if "odycdn.com" in url else 0
-                    return (is_proxy, -is_odycdn, -abs(h - height) if h else -999, h)
-
-                streams = sorted(streams, key=score, reverse=True)
-                ext = "mp4"
-
-            for s in streams:
-                stream_url = s.get("url")
-                if not stream_url:
-                    continue
-                if "odycdn.com" in stream_url and "proxy.piped" not in stream_url:
-                    continue
+            for cand in _piped_stream_candidates(data, api, video_id, format_type, quality):
+                stream_url = cand["url"]
                 if require_probe and not await _probe_media_url(client, stream_url):
-                    # Still accept Piped proxy hosts without probe (cloud probes can flake)
-                    if "proxy.piped" not in stream_url:
-                        continue
-
-                qlabel = str(s.get("quality") or s.get("qualityLabel") or quality)
-                logger.info("Piped hit: %s quality=%s", api, qlabel)
-                return {
-                    "url": stream_url,
-                    "provider": f"piped:{urlparse(api).netloc}",
-                    "filename": _safe_filename(video_id, qlabel if re.search(r"\d", qlabel) else quality, ext),
-                    "ext": ext,
-                    "content_type": "audio/mp4" if ext == "m4a" else "video/mp4",
-                }
+                    continue
+                logger.info("Piped hit: %s quality=%s", api, cand["filename"])
+                return cand
     return None
+
+
+async def collect_piped_candidates(
+    video_id: str,
+    format_type: str,
+    quality: str,
+    limit: int = 4,
+) -> List[Dict[str, Any]]:
+    """Return several probed Piped progressive URLs (fresh, playable)."""
+    apis = _instance_list("PIPED_API_INSTANCES", _DEFAULT_PIPED)
+    timeout = httpx.Timeout(18.0, connect=8.0)
+    found: List[Dict[str, Any]] = []
+    seen = set()
+
+    async with httpx.AsyncClient(timeout=timeout, headers={"User-Agent": "Mozilla/5.0"}) as client:
+        for api in apis:
+            if len(found) >= limit:
+                break
+            endpoint = f"{api}/streams/{video_id}"
+            try:
+                r = await client.get(endpoint)
+                if r.status_code >= 400 or "json" not in (r.headers.get("content-type") or ""):
+                    continue
+                data = r.json()
+            except Exception:
+                continue
+
+            for cand in _piped_stream_candidates(data, api, video_id, format_type, quality):
+                if len(found) >= limit:
+                    break
+                u = cand["url"]
+                if u in seen:
+                    continue
+                if not await _probe_media_url(client, u):
+                    continue
+                seen.add(u)
+                found.append(cand)
+                logger.info("Piped candidate: %s %s", cand["provider"], cand["filename"])
+    return found
 
 
 async def collect_youtube_candidates(
@@ -281,9 +377,7 @@ async def collect_youtube_candidates(
 
     # 1) Piped (best for cloud IPs — media comes from proxy.piped.*, not googlevideo)
     try:
-        piped = await resolve_via_piped(video_id, format_type, quality, require_probe=False)
-        if piped:
-            candidates.append(piped)
+        candidates.extend(await collect_piped_candidates(video_id, format_type, quality, limit=4))
     except Exception as exc:
         logger.debug("Piped collect failed: %s", exc)
 
@@ -291,7 +385,7 @@ async def collect_youtube_candidates(
     try:
         from app.services.innertube import resolve_via_innertube
 
-        innertube = await resolve_via_innertube(page_url, format_type, quality, require_probe=False)
+        innertube = await resolve_via_innertube(page_url, format_type, quality, require_probe=True)
         if innertube:
             candidates.append(innertube)
     except Exception as exc:

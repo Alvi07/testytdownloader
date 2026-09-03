@@ -28,6 +28,7 @@ from app.services.external_streams import (
     resolve_external_download,
     extract_youtube_id,
     collect_youtube_candidates,
+    media_request_headers,
 )
 from app.services.cleaner import start_periodic_cleaner, cleanup_stale_files
 from app.utils.helpers import is_valid_url
@@ -190,16 +191,10 @@ async def download_file(
     quality = normalize_quality(quality, format_type)
     direct_error = "Download failed."
     is_youtube = bool(extract_youtube_id(url))
-    last_piped_url = None
-    last_piped_name = "video.mp4"
 
     async def try_candidate(external: dict) -> Optional[FileResponse]:
-        nonlocal last_piped_url, last_piped_name
         stream_url = external["url"]
         provider = external.get("provider") or "external"
-        if "piped" in provider:
-            last_piped_url = stream_url
-            last_piped_name = external.get("filename") or last_piped_name
 
         ext = (external.get("ext") or "mp4").lstrip(".")
         filename = sanitize_download_name(
@@ -217,9 +212,10 @@ async def download_file(
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(180.0, connect=20.0),
             follow_redirects=True,
-            headers={"User-Agent": "Mozilla/5.0"},
         ) as client:
-            async with client.stream("GET", stream_url) as upstream:
+            async with client.stream(
+                "GET", stream_url, headers=media_request_headers(stream_url)
+            ) as upstream:
                 if upstream.status_code >= 400:
                     raise RuntimeError(f"{provider} HTTP {upstream.status_code}")
                 first = b""
@@ -292,19 +288,6 @@ async def download_file(
     except Exception as e:
         logger.warning("yt-dlp download failed for %s: %s", url, e)
         direct_error = str(e)
-
-    # Last resort for YouTube: let the *browser* open Piped proxy URL
-    # (user residential IP → Piped → YouTube). File may open in a new tab.
-    if is_youtube and last_piped_url:
-        return JSONResponse(
-            {
-                "success": True,
-                "mode": "browser_open",
-                "download_url": last_piped_url,
-                "filename": sanitize_download_name(last_piped_name),
-                "note": "Server CDN blocked; opening Piped mirror in your browser.",
-            }
-        )
 
     raise HTTPException(
         status_code=403 if is_youtube else 500,
