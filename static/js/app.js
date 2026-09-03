@@ -283,14 +283,15 @@ document.addEventListener('DOMContentLoaded', () => {
             const card = document.createElement('div');
             card.className = `format-card ${index === 0 ? 'selected' : ''}`;
             card.dataset.type = 'video';
-            card.dataset.quality = opt.resolution;
-            card.dataset.label = `${opt.resolution} (${opt.ext.toUpperCase()})`;
-            card.dataset.formatKey = opt.format_key;
+            // Backend video options use resolution (720p), not format_key
+            const q = opt.resolution || opt.format_key || '720p';
+            card.dataset.quality = q;
+            card.dataset.label = `${q} (${(opt.ext || 'mp4').toUpperCase()})`;
 
             card.innerHTML = `
                 <div class="format-header">
-                    <span class="format-res">${opt.resolution}</span>
-                    <span class="format-pill ${opt.height >= 720 ? 'highlight' : ''}">${opt.quality_tag}</span>
+                    <span class="format-res">${q}</span>
+                    <span class="format-pill ${opt.height >= 720 ? 'highlight' : ''}">${opt.quality_tag || 'HD'}</span>
                 </div>
                 <div class="format-size">${opt.filesize_formatted || 'N/A'}</div>
             `;
@@ -325,10 +326,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Set default selection to highest quality video
         if (videoOptions.length > 0) {
+            const defaultQ = videoOptions[0].resolution || '720p';
             selectedFormat = {
                 type: 'video',
-                quality: videoOptions[0].format_key,
-                label: `${videoOptions[0].resolution} (MP4)`
+                quality: defaultQ,
+                label: `${defaultQ} (MP4)`
             };
             selectedFormatLabel.textContent = selectedFormat.label;
         }
@@ -367,10 +369,11 @@ document.addEventListener('DOMContentLoaded', () => {
         document.querySelectorAll('.format-card').forEach(c => c.classList.remove('selected'));
         card.classList.add('selected');
 
+        const q = card.dataset.quality || (card.dataset.type === 'audio' ? 'm4a_best' : '720p');
         selectedFormat = {
-            type: card.dataset.type,
-            quality: card.dataset.formatKey,
-            label: card.dataset.label
+            type: card.dataset.type || 'video',
+            quality: q,
+            label: card.dataset.label || `${q} (MP4)`
         };
         selectedFormatLabel.textContent = selectedFormat.label;
     }
@@ -402,8 +405,10 @@ document.addEventListener('DOMContentLoaded', () => {
             // (Old POST + JSON body caused 405 Method Not Allowed)
             const params = new URLSearchParams({
                 url: currentVideoData.webpage_url,
-                format_type: selectedFormat.type,
-                quality: selectedFormat.quality
+                format_type: selectedFormat.type || 'video',
+                quality: (selectedFormat.quality && selectedFormat.quality !== 'undefined')
+                    ? selectedFormat.quality
+                    : (selectedFormat.type === 'audio' ? 'm4a_best' : '720p')
             });
 
             progressStatusText.innerHTML = '<i class="fa-solid fa-cloud-arrow-down fa-spin"></i> Downloading file...';

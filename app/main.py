@@ -1,5 +1,6 @@
 import os
 import re
+import uuid
 import asyncio
 import logging
 from contextlib import asynccontextmanager
@@ -9,7 +10,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, HttpUrl
 import httpx
 from urllib.parse import quote
@@ -205,75 +206,78 @@ async def download_file(
         logger.warning("Direct yt-dlp download failed for %s: %s", url, e)
         direct_error = str(e)
 
-    # --- Path B: Invidious/Piped → stream through us → local save ---
+    # --- Path B: Invidious/Piped → temp file (validated MP4) → local save ---
     if extract_youtube_id(url):
         try:
+            from app.services.external_streams import looks_like_media, normalize_quality
+
+            quality = normalize_quality(quality, format_type)
             external = await resolve_external_download(url, format_type, quality)
             if external and external.get("url"):
                 stream_url = external["url"]
+                ext = (external.get("ext") or "mp4").lstrip(".")
                 filename = sanitize_download_name(
-                    external.get("filename") or f"video_{quality}.mp4"
+                    external.get("filename") or f"video_{quality}.{ext}"
                 )
+                if not filename.lower().endswith(f".{ext}"):
+                    filename = f"{filename.rsplit('.', 1)[0]}.{ext}"
                 provider = external.get("provider") or "external"
-                media_type = (
-                    "audio/mp4"
-                    if format_type == "audio"
-                    else "video/mp4"
+                media_type = external.get("content_type") or (
+                    "audio/mp4" if format_type == "audio" else "video/mp4"
                 )
 
                 logger.info(
-                    "Proxy-streaming external download via %s for %s",
+                    "Fetching playable media via %s for %s",
                     provider,
                     url,
                 )
 
-                client = httpx.AsyncClient(
+                temp_path = DOWNLOADS_DIR / f"ext_{uuid.uuid4().hex[:12]}.{ext}"
+                async with httpx.AsyncClient(
                     timeout=httpx.Timeout(180.0, connect=20.0),
                     follow_redirects=True,
-                    headers={"User-Agent": "ProStream/1.0"},
-                )
-                req = client.build_request("GET", stream_url)
-                upstream = await client.send(req, stream=True)
+                    headers={"User-Agent": "Mozilla/5.0"},
+                ) as client:
+                    async with client.stream("GET", stream_url) as upstream:
+                        if upstream.status_code >= 400:
+                            raise RuntimeError(
+                                f"External mirror returned HTTP {upstream.status_code}"
+                            )
+                        first = b""
+                        total = 0
+                        with open(temp_path, "wb") as out:
+                            async for chunk in upstream.aiter_bytes(64 * 1024):
+                                if not first:
+                                    first = chunk[:64]
+                                    if not looks_like_media(first):
+                                        raise RuntimeError(
+                                            "External mirror returned non-media data "
+                                            "(HTML/error). Try another quality."
+                                        )
+                                out.write(chunk)
+                                total += len(chunk)
 
-                if upstream.status_code >= 400:
-                    await upstream.aclose()
-                    await client.aclose()
-                    raise RuntimeError(
-                        f"External mirror returned HTTP {upstream.status_code}"
-                    )
+                if total < 10_000:
+                    temp_path.unlink(missing_ok=True)
+                    raise RuntimeError("Downloaded file too small / incomplete.")
 
-                upstream_type = upstream.headers.get("content-type")
-                if upstream_type and "text/html" not in upstream_type:
-                    media_type = upstream_type.split(";")[0].strip()
-
-                async def file_iterator():
-                    try:
-                        async for chunk in upstream.aiter_bytes(64 * 1024):
-                            yield chunk
-                    finally:
-                        await upstream.aclose()
-                        await client.aclose()
-
-                headers = {
-                    "Content-Disposition": (
-                        f"attachment; filename=\"{filename}\"; "
-                        f"filename*=UTF-8''{quote(filename)}"
-                    ),
-                    "Access-Control-Expose-Headers": (
-                        "Content-Disposition, X-Download-Mode, X-Download-Provider"
-                    ),
-                    "X-Download-Mode": "external-proxy",
-                    "X-Download-Provider": provider,
-                    "Cache-Control": "no-store",
-                }
-                content_length = upstream.headers.get("content-length")
-                if content_length:
-                    headers["Content-Length"] = content_length
-
-                return StreamingResponse(
-                    file_iterator(),
+                background_tasks.add_task(delete_temp_file, str(temp_path))
+                return FileResponse(
+                    path=str(temp_path),
+                    filename=filename,
                     media_type=media_type,
-                    headers=headers,
+                    headers={
+                        "Content-Disposition": (
+                            f'attachment; filename="{filename}"; '
+                            f"filename*=UTF-8''{quote(filename)}"
+                        ),
+                        "Access-Control-Expose-Headers": (
+                            "Content-Disposition, X-Download-Mode, X-Download-Provider"
+                        ),
+                        "X-Download-Mode": "external-proxy",
+                        "X-Download-Provider": provider,
+                        "Cache-Control": "no-store",
+                    },
                 )
         except Exception as ext_err:
             logger.error("External resolver/stream failed for %s: %s", url, ext_err)
@@ -297,8 +301,12 @@ async def download_file(
 
 
 def sanitize_download_name(name: str) -> str:
-    """Keep filenames safe for Content-Disposition."""
-    cleaned = re.sub(r'[\\/:*?"<>|]+', "_", name).strip() or "download.mp4"
+    """Keep filenames safe for Content-Disposition and always keep a media extension."""
+    cleaned = re.sub(r'[\\/:*?"<>|]+', "_", (name or "").strip())
+    cleaned = cleaned.replace("undefined", "720p").replace("null", "720p")
+    cleaned = cleaned.strip(" ._") or "download"
+    if not re.search(r"\.(mp4|m4a|mp3|webm)$", cleaned, re.I):
+        cleaned = f"{cleaned}.mp4"
     return cleaned[:180]
 
 
