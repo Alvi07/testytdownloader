@@ -25,15 +25,30 @@ _INNERTUBE_KEY = "AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w"
 
 _CLIENTS = [
     {
+        "name": "ANDROID",
+        "version": "19.35.36",
+        "ua": "com.google.android.youtube/19.35.36 (Linux; U; Android 14) gzip",
+        "extra": {"androidSdkVersion": 34},
+    },
+    {
+        "name": "IOS",
+        "version": "19.45.4",
+        "ua": "com.google.ios.youtube/19.45.4 (iPhone16,2; U; CPU iOS 18_1_0 like Mac OS X;)",
+        "extra": {"deviceMake": "Apple", "deviceModel": "iPhone16,2", "osName": "iPhone", "osVersion": "18.1.0"},
+    },
+    {
         "name": "ANDROID_VR",
         "version": "1.60.19",
         "ua": "com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 12) gzip",
         "extra": {},
     },
     {
-        "name": "TVHTML5",
-        "version": "7.20241001.08.00",
-        "ua": "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version",
+        "name": "MWEB",
+        "version": "2.20241202.07.00",
+        "ua": (
+            "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+        ),
         "extra": {},
     },
     {

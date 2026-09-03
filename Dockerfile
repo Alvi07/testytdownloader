@@ -24,7 +24,7 @@ RUN curl -fsSL https://github.com/denoland/deno/releases/download/v2.1.4/deno-x8
 # Set working directory
 WORKDIR /app
 
-# Install Python requirements (yt-dlp[default] includes ejs helper)
+# Install Python requirements (always refresh yt-dlp — YouTube breaks old builds fast)
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt \
     && pip install --no-cache-dir -U "yt-dlp[default]" \

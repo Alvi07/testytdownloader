@@ -36,10 +36,10 @@ BASE_YTDL_OPTS: Dict[str, Any] = {
     # YouTube JS challenge solver
     "js_runtimes": {"deno": {}},
     "remote_components": ["ejs:github"],
-    # Avoid android_sdkless formats that often 403 on CDN
+    # android/ios/mweb work on cloud; "default"/web often: "Failed to extract any player response"
     "extractor_args": {
         "youtube": {
-            "player_client": ["default", "-android_sdkless"],
+            "player_client": ["android", "ios", "mweb", "tv", "web"],
         }
     },
     "http_headers": {
@@ -102,39 +102,131 @@ def _is_retryable_download_error(exc: Exception) -> bool:
 def _extract_info_sync(url: str) -> Dict[str, Any]:
     """Synchronously extract metadata using yt-dlp without downloading."""
 
-    ydl_opts = _build_ydl_opts({
-        "extract_flat": False,
-        "skip_download": True,
-        # Do not force a stream format during metadata fetch
-        "ignore_no_formats_error": True,
-    })
-    # Ensure no inherited/default format filter breaks info extraction
-    ydl_opts.pop("format", None)
+    client_attempts = [
+        ["android", "ios", "mweb", "tv", "web"],
+        ["android", "ios"],
+        ["mweb", "web"],
+        ["tv"],
+    ]
+    last_err: Optional[Exception] = None
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(
-            url,
-            download=False,
-        )
+    for clients in client_attempts:
+        ydl_opts = _build_ydl_opts({
+            "extract_flat": False,
+            "skip_download": True,
+            "ignore_no_formats_error": True,
+            "extractor_args": {
+                "youtube": {"player_client": clients},
+            },
+        })
+        ydl_opts.pop("format", None)
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                if not info:
+                    raise ValueError("Could not extract information from the provided URL.")
+                return ydl.sanitize_info(info)
+        except Exception as exc:
+            last_err = exc
+            logger.warning("yt-dlp info failed clients=%s: %s", clients, exc)
 
-        if not info:
-            raise ValueError("Could not extract information from the provided URL.")
+    raise last_err or ValueError("Could not extract information from the provided URL.")
 
-        return ydl.sanitize_info(info)
+
+def _standard_quality_options() -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """UI quality cards when only metadata is available (no yt-dlp formats)."""
+    video_options = [
+        {
+            "height": res,
+            "resolution": f"{res}p",
+            "ext": "mp4",
+            "filesize": None,
+            "filesize_formatted": "High Quality",
+            "quality_tag": "Full HD" if res >= 1080 else ("HD" if res >= 720 else "SD"),
+        }
+        for res in (1080, 720, 480, 360)
+    ]
+    audio_options = [
+        {
+            "format_key": "mp3_320",
+            "title": "MP3 Audio (High Quality)",
+            "ext": "mp3",
+            "bitrate": "320 kbps",
+            "filesize_formatted": "Universal Audio",
+        },
+        {
+            "format_key": "mp3_192",
+            "title": "MP3 Audio (Standard)",
+            "ext": "mp3",
+            "bitrate": "192 kbps",
+            "filesize_formatted": "Compact Audio",
+        },
+        {
+            "format_key": "m4a_best",
+            "title": "M4A Audio (Original Quality)",
+            "ext": "m4a",
+            "bitrate": "Original Stream",
+            "filesize_formatted": "Original Quality",
+        },
+    ]
+    return video_options, audio_options
+
+
+async def get_youtube_info_fallback(url: str) -> Dict[str, Any]:
+    """Simple YouTube analyze without yt-dlp (InnerTube / Piped)."""
+    from app.services.metadata_enrich import fetch_youtube_duration_and_meta
+
+    video_id = extract_youtube_id(url)
+    if not video_id:
+        raise ValueError("Not a YouTube URL.")
+
+    meta = await fetch_youtube_duration_and_meta(url)
+    if not meta.get("title") and not meta.get("duration"):
+        raise ValueError("Could not analyze this YouTube video via fallback.")
+
+    duration_sec = int(meta.get("duration") or 0)
+    title = meta.get("title") or "YouTube Video"
+    thumbnail = meta.get("thumbnail") or f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
+    uploader = meta.get("uploader") or "YouTube"
+    view_count = meta.get("view_count")
+    video_options, audio_options = _standard_quality_options()
+
+    return {
+        "title": title,
+        "thumbnail": thumbnail,
+        "duration": duration_sec,
+        "duration_formatted": format_duration(duration_sec),
+        "uploader": uploader,
+        "view_count": view_count,
+        "view_count_formatted": format_count(view_count) if view_count else "0",
+        "webpage_url": f"https://www.youtube.com/watch?v={video_id}",
+        "description": "",
+        "video_options": video_options,
+        "audio_options": audio_options,
+        "source": "fallback",
+    }
 
 
 async def get_video_info(url: str) -> Dict[str, Any]:
     """Async wrapper to fetch and parse video metadata and formats."""
 
     loop = asyncio.get_running_loop()
+    raw_info: Optional[Dict[str, Any]] = None
+    extract_error: Optional[Exception] = None
 
-    raw_info = await loop.run_in_executor(
-        None,
-        _extract_info_sync,
-        url,
-    )
+    try:
+        raw_info = await loop.run_in_executor(None, _extract_info_sync, url)
+    except Exception as exc:
+        extract_error = exc
+        logger.warning("yt-dlp analyze failed for %s: %s", url, exc)
+        if extract_youtube_id(url):
+            logger.info("Using simple YouTube fallback for analyze: %s", url)
+            return await get_youtube_info_fallback(url)
+        raise
 
     if not raw_info:
+        if extract_youtube_id(url):
+            return await get_youtube_info_fallback(url)
         raise ValueError(
             "Could not extract information from the provided URL."
         )
@@ -596,28 +688,23 @@ def _download_sync(
     preferred_format = ydl_opts.get("format", "best")
     attempts: List[Dict[str, Any]] = [
         {
-            "label": "default,-android_sdkless",
-            "player_client": ["default", "-android_sdkless"],
+            "label": "android/ios progressive",
+            "player_client": ["android", "ios", "mweb"],
+            "format": "18/22/best[ext=mp4]/best",
+        },
+        {
+            "label": "android/ios preferred",
+            "player_client": ["android", "ios", "mweb", "tv", "web"],
             "format": preferred_format,
         },
         {
-            "label": "default,-android_sdkless + best",
-            "player_client": ["default", "-android_sdkless"],
-            "format": "bestvideo+bestaudio/best",
-        },
-        {
-            "label": "web only",
-            "player_client": ["web"],
-            "format": preferred_format,
-        },
-        {
-            "label": "mweb only",
-            "player_client": ["mweb"],
+            "label": "mweb/web best",
+            "player_client": ["mweb", "web"],
             "format": "best/bestvideo+bestaudio",
         },
         {
             "label": "ios m3u8 fallback",
-            "player_client": ["default", "ios", "-android_sdkless"],
+            "player_client": ["ios", "mweb"],
             "format": (
                 "bv*[protocol=m3u8_native]+ba*[protocol=m3u8_native]/"
                 "b[protocol=m3u8_native]/best"
