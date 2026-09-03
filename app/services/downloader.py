@@ -161,10 +161,10 @@ async def get_video_info(url: str) -> Dict[str, Any]:
                 "",
             )
 
-    duration_sec = raw_info.get(
-        "duration",
-        0,
-    ) or 0
+    try:
+        duration_sec = int(raw_info.get("duration") or 0)
+    except Exception:
+        duration_sec = 0
 
     uploader = (
         raw_info.get("uploader")
@@ -182,14 +182,15 @@ async def get_video_info(url: str) -> Dict[str, Any]:
         url,
     )
 
-    # Enrich duration/title when yt-dlp returns incomplete YouTube metadata
-    if extract_youtube_id(url) and (not duration_sec or duration_sec <= 0):
+    # Always enrich YouTube metadata when duration missing/zero
+    if extract_youtube_id(url) and duration_sec <= 0:
         try:
             from app.services.metadata_enrich import fetch_youtube_duration_and_meta
 
             extra = await fetch_youtube_duration_and_meta(url)
             if extra.get("duration"):
                 duration_sec = int(extra["duration"])
+                logger.info("Enriched duration=%s for %s", duration_sec, url)
             if extra.get("title") and (not title or title == "Untitled Video"):
                 title = extra["title"]
             if extra.get("uploader") and uploader == "Unknown Creator":

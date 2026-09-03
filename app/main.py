@@ -174,131 +174,138 @@ async def download_file(
     """
     Download media and force a local browser save.
 
-    Strategy:
-      1) Try yt-dlp on this server.
-      2) If YouTube CDN/bot-blocks us, resolve Invidious/Piped URL and
-         *proxy-stream* it through this API with Content-Disposition:attachment
-         so the file saves locally (not just open in a new tab).
+    Strategy for YouTube (cloud-friendly):
+      1) InnerTube / Piped / Invidious progressive MP4 → save locally
+      2) Fallback: yt-dlp on this server
+    Other sites: yt-dlp first, then fail clearly.
     """
     if not is_valid_url(url):
         raise HTTPException(status_code=400, detail="Invalid target URL.")
 
-    # --- Path A: direct yt-dlp on server ---
+    from app.services.external_streams import looks_like_media, normalize_quality
+
+    quality = normalize_quality(quality, format_type)
+    direct_error = "Download failed."
+    is_youtube = bool(extract_youtube_id(url))
+
+    async def fetch_external_to_file() -> Optional[FileResponse]:
+        external = await resolve_external_download(url, format_type, quality)
+        if not external or not external.get("url"):
+            return None
+
+        stream_url = external["url"]
+        ext = (external.get("ext") or "mp4").lstrip(".")
+        filename = sanitize_download_name(
+            external.get("filename") or f"video_{quality}.{ext}"
+        )
+        if not filename.lower().endswith(f".{ext}"):
+            filename = f"{filename.rsplit('.', 1)[0]}.{ext}"
+        provider = external.get("provider") or "external"
+        media_type = external.get("content_type") or (
+            "audio/mp4" if format_type == "audio" else "video/mp4"
+        )
+
+        logger.info("Fetching playable media via %s for %s", provider, url)
+        temp_path = DOWNLOADS_DIR / f"ext_{uuid.uuid4().hex[:12]}.{ext}"
+
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(180.0, connect=20.0),
+            follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0"},
+        ) as client:
+            async with client.stream("GET", stream_url) as upstream:
+                if upstream.status_code >= 400:
+                    raise RuntimeError(
+                        f"External mirror returned HTTP {upstream.status_code}"
+                    )
+                first = b""
+                total = 0
+                with open(temp_path, "wb") as out:
+                    async for chunk in upstream.aiter_bytes(64 * 1024):
+                        if not first:
+                            first = chunk[:64]
+                            if not looks_like_media(first):
+                                raise RuntimeError(
+                                    "External mirror returned non-media data."
+                                )
+                        out.write(chunk)
+                        total += len(chunk)
+
+        if total < 10_000:
+            temp_path.unlink(missing_ok=True)
+            raise RuntimeError("Downloaded file too small / incomplete.")
+
+        background_tasks.add_task(delete_temp_file, str(temp_path))
+        return FileResponse(
+            path=str(temp_path),
+            filename=filename,
+            media_type=media_type,
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="{filename}"; '
+                    f"filename*=UTF-8''{quote(filename)}"
+                ),
+                "Access-Control-Expose-Headers": (
+                    "Content-Disposition, X-Download-Mode, X-Download-Provider"
+                ),
+                "X-Download-Mode": "external-proxy",
+                "X-Download-Provider": provider,
+                "Cache-Control": "no-store",
+            },
+        )
+
+    # YouTube on cloud: prefer InnerTube/Piped BEFORE slow yt-dlp bot failures
+    if is_youtube:
+        try:
+            resp = await fetch_external_to_file()
+            if resp is not None:
+                return resp
+        except Exception as ext_err:
+            logger.error("External YouTube download failed for %s: %s", url, ext_err)
+            direct_error = str(ext_err)
+
+    # yt-dlp path (all platforms + YouTube fallback)
     try:
         result = await download_media(url, format_type, quality)
         file_path = result["file_path"]
         filename = result["filename"]
         content_type = result["content_type"]
-
         background_tasks.add_task(delete_temp_file, file_path)
-
         return FileResponse(
             path=file_path,
             filename=filename,
             media_type=content_type,
             headers={
                 "Content-Disposition": f'attachment; filename="{filename}"',
-                "Access-Control-Expose-Headers": "Content-Disposition, X-Download-Mode, X-Download-Provider",
+                "Access-Control-Expose-Headers": (
+                    "Content-Disposition, X-Download-Mode, X-Download-Provider"
+                ),
                 "X-Download-Mode": "direct",
-            }
+            },
         )
     except Exception as e:
-        logger.warning("Direct yt-dlp download failed for %s: %s", url, e)
+        logger.warning("yt-dlp download failed for %s: %s", url, e)
         direct_error = str(e)
 
-    # --- Path B: Invidious/Piped → temp file (validated MP4) → local save ---
-    if extract_youtube_id(url):
+    # Non-YouTube already tried yt-dlp; YouTube: one more external attempt if first failed early
+    if is_youtube:
         try:
-            from app.services.external_streams import looks_like_media, normalize_quality
-
-            quality = normalize_quality(quality, format_type)
-            external = await resolve_external_download(url, format_type, quality)
-            if external and external.get("url"):
-                stream_url = external["url"]
-                ext = (external.get("ext") or "mp4").lstrip(".")
-                filename = sanitize_download_name(
-                    external.get("filename") or f"video_{quality}.{ext}"
-                )
-                if not filename.lower().endswith(f".{ext}"):
-                    filename = f"{filename.rsplit('.', 1)[0]}.{ext}"
-                provider = external.get("provider") or "external"
-                media_type = external.get("content_type") or (
-                    "audio/mp4" if format_type == "audio" else "video/mp4"
-                )
-
-                logger.info(
-                    "Fetching playable media via %s for %s",
-                    provider,
-                    url,
-                )
-
-                temp_path = DOWNLOADS_DIR / f"ext_{uuid.uuid4().hex[:12]}.{ext}"
-                async with httpx.AsyncClient(
-                    timeout=httpx.Timeout(180.0, connect=20.0),
-                    follow_redirects=True,
-                    headers={"User-Agent": "Mozilla/5.0"},
-                ) as client:
-                    async with client.stream("GET", stream_url) as upstream:
-                        if upstream.status_code >= 400:
-                            raise RuntimeError(
-                                f"External mirror returned HTTP {upstream.status_code}"
-                            )
-                        first = b""
-                        total = 0
-                        with open(temp_path, "wb") as out:
-                            async for chunk in upstream.aiter_bytes(64 * 1024):
-                                if not first:
-                                    first = chunk[:64]
-                                    if not looks_like_media(first):
-                                        raise RuntimeError(
-                                            "External mirror returned non-media data "
-                                            "(HTML/error). Try another quality."
-                                        )
-                                out.write(chunk)
-                                total += len(chunk)
-
-                if total < 10_000:
-                    temp_path.unlink(missing_ok=True)
-                    raise RuntimeError("Downloaded file too small / incomplete.")
-
-                background_tasks.add_task(delete_temp_file, str(temp_path))
-                return FileResponse(
-                    path=str(temp_path),
-                    filename=filename,
-                    media_type=media_type,
-                    headers={
-                        "Content-Disposition": (
-                            f'attachment; filename="{filename}"; '
-                            f"filename*=UTF-8''{quote(filename)}"
-                        ),
-                        "Access-Control-Expose-Headers": (
-                            "Content-Disposition, X-Download-Mode, X-Download-Provider"
-                        ),
-                        "X-Download-Mode": "external-proxy",
-                        "X-Download-Provider": provider,
-                        "Cache-Control": "no-store",
-                    },
-                )
+            resp = await fetch_external_to_file()
+            if resp is not None:
+                return resp
         except Exception as ext_err:
-            logger.error("External resolver/stream failed for %s: %s", url, ext_err)
+            logger.error("External retry failed for %s: %s", url, ext_err)
+            direct_error = str(ext_err)
 
-    # Both paths failed
-    if (
-        "not a bot" in direct_error.lower()
-        or "Use --cookies" in direct_error
-        or "Sign in to confirm" in direct_error
-        or "HTTP Error 403" in direct_error
-        or "403: Forbidden" in direct_error
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "YouTube blocked server download and no working Invidious/Piped "
-                "mirror was found. Try again later, or run the app locally."
-            ),
-        )
-    raise HTTPException(status_code=500, detail=f"Download failed: {direct_error}")
-
+    raise HTTPException(
+        status_code=403 if is_youtube else 500,
+        detail=(
+            "YouTube blocked server download and no working mirror was found. "
+            "Try again later, or run the app locally."
+            if is_youtube
+            else f"Download failed: {direct_error}"
+        ),
+    )
 
 def sanitize_download_name(name: str) -> str:
     """Keep filenames safe for Content-Disposition and always keep a media extension."""

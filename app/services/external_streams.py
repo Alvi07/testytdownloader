@@ -273,11 +273,22 @@ async def resolve_external_download(
 
     quality = normalize_quality(quality, format_type)
 
-    # Piped proxy URLs are currently more reliable than public Invidious
+    # 1) InnerTube ANDROID_VR / TV — direct googlevideo progressive MP4
+    try:
+        from app.services.innertube import resolve_via_innertube
+
+        result = await resolve_via_innertube(page_url, format_type, quality)
+        if result:
+            return result
+    except Exception as exc:
+        logger.debug("InnerTube resolve failed: %s", exc)
+
+    # 2) Piped proxy URLs
     result = await resolve_via_piped(video_id, format_type, quality)
     if result:
         return result
 
+    # 3) Invidious (often down, last resort)
     result = await resolve_via_invidious(video_id, format_type, quality)
     if result:
         return result

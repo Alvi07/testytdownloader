@@ -25,19 +25,35 @@ _PIPED_APIS = [
 async def fetch_youtube_duration_and_meta(url: str) -> Dict[str, Any]:
     """
     Best-effort enrichment for YouTube when yt-dlp omits duration.
-    Tries Piped JSON APIs, then a lightweight YouTube watch-page scrape.
+    Order: InnerTube → Piped → watch-page scrape.
     """
     video_id = extract_youtube_id(url)
     if not video_id:
         return {}
 
-    meta = await _from_piped(video_id)
+    meta: Dict[str, Any] = {}
+
+    # 1) InnerTube (reliable duration on cloud IPs)
+    try:
+        from app.services.innertube import fetch_innertube_meta
+
+        meta = await fetch_innertube_meta(url)
+        if meta.get("duration"):
+            return meta
+    except Exception as exc:
+        logger.debug("InnerTube meta failed: %s", exc)
+
+    # 2) Piped
+    piped = await _from_piped(video_id)
+    for k, v in piped.items():
+        if v and not meta.get(k):
+            meta[k] = v
     if meta.get("duration"):
         return meta
 
-    meta2 = await _from_youtube_watch_page(video_id)
-    # merge preferring existing non-empty
-    for k, v in meta2.items():
+    # 3) Watch page scrape
+    page = await _from_youtube_watch_page(video_id)
+    for k, v in page.items():
         if v and not meta.get(k):
             meta[k] = v
     return meta
