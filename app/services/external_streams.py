@@ -18,9 +18,8 @@ import httpx
 logger = logging.getLogger("downloader.external")
 
 # Progressive muxed MP4 only (audio+video in one file).
-# Do NOT use DASH video-only itags (137, 136, …) — they will not play alone.
 _PROGRESSIVE_VIDEO_ITAGS = {
-    1080: [37, 22, 18],  # 37 rarely available
+    1080: [37, 22, 18],
     720: [22, 18],
     480: [59, 78, 18, 22],
     360: [18, 22],
@@ -36,14 +35,17 @@ _DEFAULT_INVIDIOUS = [
     "https://yewtu.be",
     "https://invidious.nerdvpn.de",
     "https://inv.nadeko.net",
-    "https://invidious.projectsegfau.lt",
-    "https://invidious.privacyredirect.com",
+    "https://invidious.f5.si",
+    "https://yt.chocolatemoo53.com",
+    "https://invidious.tiekoetter.com",
 ]
 
 _DEFAULT_PIPED = [
+    "https://api.piped.private.coffee",
     "https://pipedapi.kavin.rocks",
     "https://pipedapi.adminforge.de",
-    "https://pipedapi.nosebs.ru",
+    "https://pipedapi.syncpundit.io",
+    "https://pipedapi.leptons.xyz",
 ]
 
 
@@ -111,29 +113,28 @@ def looks_like_media(data: bytes) -> bool:
         return False
     sample = data[:64].lstrip()
     lower = sample[:32].lower()
-    if lower.startswith((b"<!doctype", b"<html", b"{", b"[")):
+    if lower.startswith((b"<!doctype", b"<html", b"{", b"[", b"this content")):
         return False
-    # MP4 / M4A: ....ftyp
     if b"ftyp" in data[:64]:
         return True
-    # WebM / Matroska
     if data.startswith(b"\x1a\x45\xdf\xa3"):
         return True
-    # ID3 / MP3
     if data.startswith(b"ID3") or data[:2] == b"\xff\xfb":
         return True
     return False
 
 
 async def _probe_media_url(client: httpx.AsyncClient, url: str) -> bool:
-    """Confirm URL returns real media bytes (not HTML error)."""
+    """Confirm URL returns real media bytes (not HTML error). 206 Partial is OK."""
     try:
         r = await client.get(url, headers={"Range": "bytes=0-1023"}, follow_redirects=True)
         if r.status_code >= 400:
             return False
         ctype = (r.headers.get("content-type") or "").lower()
-        if "text/html" in ctype or "application/json" in ctype:
-            return False
+        if "text/html" in ctype or "application/json" in ctype or "text/plain" in ctype:
+            # some CDNs send video/mp4 only; reject obvious non-media text
+            if not looks_like_media(r.content):
+                return False
         return looks_like_media(r.content)
     except Exception:
         return False
@@ -146,12 +147,11 @@ async def resolve_via_invidious(
 ) -> Optional[Dict[str, Any]]:
     instances = _instance_list("INVIDIOUS_INSTANCES", _DEFAULT_INVIDIOUS)
     itags = _candidate_itags(format_type, quality)
-    # Always end with safest progressive fallbacks
     for fallback in (22, 18, 140):
         if fallback not in itags:
             itags.append(fallback)
 
-    timeout = httpx.Timeout(15.0, connect=8.0)
+    timeout = httpx.Timeout(12.0, connect=6.0)
     async with httpx.AsyncClient(timeout=timeout, headers={"User-Agent": "Mozilla/5.0"}) as client:
         for base in instances:
             for itag in itags:
@@ -186,10 +186,10 @@ async def resolve_via_piped(
     format_type: str,
     quality: str,
 ) -> Optional[Dict[str, Any]]:
-    """Fallback: Piped API — only progressive (non videoOnly) streams."""
+    """Prefer Piped *proxy* progressive MP4 URLs (playable single files)."""
     apis = _instance_list("PIPED_API_INSTANCES", _DEFAULT_PIPED)
     height = _quality_height(quality)
-    timeout = httpx.Timeout(15.0, connect=8.0)
+    timeout = httpx.Timeout(18.0, connect=8.0)
 
     async with httpx.AsyncClient(timeout=timeout, headers={"User-Agent": "Mozilla/5.0"}) as client:
         for api in apis:
@@ -197,6 +197,8 @@ async def resolve_via_piped(
             try:
                 r = await client.get(endpoint)
                 if r.status_code >= 400:
+                    continue
+                if "json" not in (r.headers.get("content-type") or ""):
                     continue
                 data = r.json()
             except Exception as exc:
@@ -207,24 +209,32 @@ async def resolve_via_piped(
                 streams = data.get("audioStreams") or []
                 streams = [
                     s for s in streams
-                    if (s.get("mimeType") or "").startswith(("audio/mp4", "audio/m4a"))
+                    if (s.get("mimeType") or "").startswith(("audio/mp4", "audio/m4a", "audio/webm"))
                 ]
                 streams = sorted(streams, key=lambda s: s.get("bitrate") or 0, reverse=True)
                 ext = "m4a"
             else:
                 streams = data.get("videoStreams") or []
-                # Progressive only = has audio already (not videoOnly)
+                # Progressive muxed only
                 streams = [
                     s for s in streams
                     if not s.get("videoOnly")
-                    and (s.get("mimeType") or "").startswith("video/mp4")
+                    and "mpegurl" not in (s.get("mimeType") or "").lower()
+                    and (
+                        (s.get("mimeType") or "").startswith("video/mp4")
+                        or "mp4" in (s.get("url") or "")
+                    )
                 ]
 
                 def score(s: Dict[str, Any]) -> tuple:
                     q = str(s.get("quality") or s.get("qualityLabel") or "0")
                     digits = re.sub(r"\D", "", q) or "0"
-                    h = int(digits)
-                    return (-abs(h - height), h)
+                    h = int(digits) if digits.isdigit() else 0
+                    url = s.get("url") or ""
+                    # Prefer Piped proxy hosts (work from cloud); skip broken LBRY/odycdn
+                    is_proxy = 1 if ("proxy.piped" in url or "/videoplayback" in url) else 0
+                    is_odycdn = 1 if "odycdn.com" in url else 0
+                    return (is_proxy, -is_odycdn, -abs(h - height) if h else -999, h)
 
                 streams = sorted(streams, key=score, reverse=True)
                 ext = "mp4"
@@ -233,13 +243,18 @@ async def resolve_via_piped(
                 stream_url = s.get("url")
                 if not stream_url:
                     continue
+                # Skip known-broken LBRY CDN without trying long timeouts
+                if "odycdn.com" in stream_url and "proxy.piped" not in stream_url:
+                    continue
                 if not await _probe_media_url(client, stream_url):
                     continue
-                logger.info("Piped hit: %s", api)
+
+                qlabel = str(s.get("quality") or s.get("qualityLabel") or quality)
+                logger.info("Piped hit: %s quality=%s", api, qlabel)
                 return {
                     "url": stream_url,
                     "provider": f"piped:{urlparse(api).netloc}",
-                    "filename": _safe_filename(video_id, quality, ext),
+                    "filename": _safe_filename(video_id, qlabel if re.search(r"\d", qlabel) else quality, ext),
                     "ext": ext,
                     "content_type": "audio/mp4" if ext == "m4a" else "video/mp4",
                 }
@@ -258,11 +273,12 @@ async def resolve_external_download(
 
     quality = normalize_quality(quality, format_type)
 
-    result = await resolve_via_invidious(video_id, format_type, quality)
+    # Piped proxy URLs are currently more reliable than public Invidious
+    result = await resolve_via_piped(video_id, format_type, quality)
     if result:
         return result
 
-    result = await resolve_via_piped(video_id, format_type, quality)
+    result = await resolve_via_invidious(video_id, format_type, quality)
     if result:
         return result
 

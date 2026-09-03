@@ -13,6 +13,7 @@ from app.utils.helpers import (
     format_count,
     sanitize_filename,
 )
+from app.services.external_streams import extract_youtube_id
 
 logger = logging.getLogger("downloader.service")
 
@@ -163,7 +164,7 @@ async def get_video_info(url: str) -> Dict[str, Any]:
     duration_sec = raw_info.get(
         "duration",
         0,
-    )
+    ) or 0
 
     uploader = (
         raw_info.get("uploader")
@@ -180,6 +181,25 @@ async def get_video_info(url: str) -> Dict[str, Any]:
         "webpage_url",
         url,
     )
+
+    # Enrich duration/title when yt-dlp returns incomplete YouTube metadata
+    if extract_youtube_id(url) and (not duration_sec or duration_sec <= 0):
+        try:
+            from app.services.metadata_enrich import fetch_youtube_duration_and_meta
+
+            extra = await fetch_youtube_duration_and_meta(url)
+            if extra.get("duration"):
+                duration_sec = int(extra["duration"])
+            if extra.get("title") and (not title or title == "Untitled Video"):
+                title = extra["title"]
+            if extra.get("uploader") and uploader == "Unknown Creator":
+                uploader = extra["uploader"]
+            if extra.get("thumbnail") and not thumbnail:
+                thumbnail = extra["thumbnail"]
+            if extra.get("view_count") and not view_count:
+                view_count = extra["view_count"]
+        except Exception as enrich_err:
+            logger.warning("Metadata enrichment failed: %s", enrich_err)
 
     description = raw_info.get(
         "description",
