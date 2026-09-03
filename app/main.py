@@ -24,7 +24,11 @@ from app.config import (
     PROXY_URL,
 )
 from app.services.downloader import get_video_info, download_media
-from app.services.external_streams import resolve_external_download, extract_youtube_id
+from app.services.external_streams import (
+    resolve_external_download,
+    extract_youtube_id,
+    collect_youtube_candidates,
+)
 from app.services.cleaner import start_periodic_cleaner, cleanup_stale_files
 from app.utils.helpers import is_valid_url
 
@@ -174,10 +178,9 @@ async def download_file(
     """
     Download media and force a local browser save.
 
-    Strategy for YouTube (cloud-friendly):
-      1) InnerTube / Piped / Invidious progressive MP4 → save locally
-      2) Fallback: yt-dlp on this server
-    Other sites: yt-dlp first, then fail clearly.
+    YouTube (cloud-friendly):
+      Try Piped proxy → InnerTube → Invidious (each until media bytes succeed),
+      then yt-dlp last.
     """
     if not is_valid_url(url):
         raise HTTPException(status_code=400, detail="Invalid target URL.")
@@ -187,25 +190,28 @@ async def download_file(
     quality = normalize_quality(quality, format_type)
     direct_error = "Download failed."
     is_youtube = bool(extract_youtube_id(url))
+    last_piped_url = None
+    last_piped_name = "video.mp4"
 
-    async def fetch_external_to_file() -> Optional[FileResponse]:
-        external = await resolve_external_download(url, format_type, quality)
-        if not external or not external.get("url"):
-            return None
-
+    async def try_candidate(external: dict) -> Optional[FileResponse]:
+        nonlocal last_piped_url, last_piped_name
         stream_url = external["url"]
+        provider = external.get("provider") or "external"
+        if "piped" in provider:
+            last_piped_url = stream_url
+            last_piped_name = external.get("filename") or last_piped_name
+
         ext = (external.get("ext") or "mp4").lstrip(".")
         filename = sanitize_download_name(
             external.get("filename") or f"video_{quality}.{ext}"
         )
         if not filename.lower().endswith(f".{ext}"):
             filename = f"{filename.rsplit('.', 1)[0]}.{ext}"
-        provider = external.get("provider") or "external"
         media_type = external.get("content_type") or (
             "audio/mp4" if format_type == "audio" else "video/mp4"
         )
 
-        logger.info("Fetching playable media via %s for %s", provider, url)
+        logger.info("Trying download via %s for %s", provider, url)
         temp_path = DOWNLOADS_DIR / f"ext_{uuid.uuid4().hex[:12]}.{ext}"
 
         async with httpx.AsyncClient(
@@ -215,9 +221,7 @@ async def download_file(
         ) as client:
             async with client.stream("GET", stream_url) as upstream:
                 if upstream.status_code >= 400:
-                    raise RuntimeError(
-                        f"External mirror returned HTTP {upstream.status_code}"
-                    )
+                    raise RuntimeError(f"{provider} HTTP {upstream.status_code}")
                 first = b""
                 total = 0
                 with open(temp_path, "wb") as out:
@@ -225,15 +229,13 @@ async def download_file(
                         if not first:
                             first = chunk[:64]
                             if not looks_like_media(first):
-                                raise RuntimeError(
-                                    "External mirror returned non-media data."
-                                )
+                                raise RuntimeError(f"{provider} returned non-media data")
                         out.write(chunk)
                         total += len(chunk)
 
         if total < 10_000:
             temp_path.unlink(missing_ok=True)
-            raise RuntimeError("Downloaded file too small / incomplete.")
+            raise RuntimeError(f"{provider} file too small ({total} bytes)")
 
         background_tasks.add_task(delete_temp_file, str(temp_path))
         return FileResponse(
@@ -254,17 +256,21 @@ async def download_file(
             },
         )
 
-    # YouTube on cloud: prefer InnerTube/Piped BEFORE slow yt-dlp bot failures
+    # YouTube: try every mirror candidate until one yields a real MP4
     if is_youtube:
-        try:
-            resp = await fetch_external_to_file()
-            if resp is not None:
-                return resp
-        except Exception as ext_err:
-            logger.error("External YouTube download failed for %s: %s", url, ext_err)
-            direct_error = str(ext_err)
+        candidates = await collect_youtube_candidates(url, format_type, quality)
+        if not candidates:
+            logger.warning("No YouTube candidates resolved for %s", url)
+        for cand in candidates:
+            try:
+                resp = await try_candidate(cand)
+                if resp is not None:
+                    return resp
+            except Exception as ext_err:
+                logger.error("Candidate %s failed: %s", cand.get("provider"), ext_err)
+                direct_error = str(ext_err)
 
-    # yt-dlp path (all platforms + YouTube fallback)
+    # yt-dlp path
     try:
         result = await download_media(url, format_type, quality)
         file_path = result["file_path"]
@@ -287,15 +293,18 @@ async def download_file(
         logger.warning("yt-dlp download failed for %s: %s", url, e)
         direct_error = str(e)
 
-    # Non-YouTube already tried yt-dlp; YouTube: one more external attempt if first failed early
-    if is_youtube:
-        try:
-            resp = await fetch_external_to_file()
-            if resp is not None:
-                return resp
-        except Exception as ext_err:
-            logger.error("External retry failed for %s: %s", url, ext_err)
-            direct_error = str(ext_err)
+    # Last resort for YouTube: let the *browser* open Piped proxy URL
+    # (user residential IP → Piped → YouTube). File may open in a new tab.
+    if is_youtube and last_piped_url:
+        return JSONResponse(
+            {
+                "success": True,
+                "mode": "browser_open",
+                "download_url": last_piped_url,
+                "filename": sanitize_download_name(last_piped_name),
+                "note": "Server CDN blocked; opening Piped mirror in your browser.",
+            }
+        )
 
     raise HTTPException(
         status_code=403 if is_youtube else 500,

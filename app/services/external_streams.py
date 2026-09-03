@@ -185,6 +185,7 @@ async def resolve_via_piped(
     video_id: str,
     format_type: str,
     quality: str,
+    require_probe: bool = True,
 ) -> Optional[Dict[str, Any]]:
     """Prefer Piped *proxy* progressive MP4 URLs (playable single files)."""
     apis = _instance_list("PIPED_API_INSTANCES", _DEFAULT_PIPED)
@@ -215,7 +216,6 @@ async def resolve_via_piped(
                 ext = "m4a"
             else:
                 streams = data.get("videoStreams") or []
-                # Progressive muxed only
                 streams = [
                     s for s in streams
                     if not s.get("videoOnly")
@@ -231,7 +231,6 @@ async def resolve_via_piped(
                     digits = re.sub(r"\D", "", q) or "0"
                     h = int(digits) if digits.isdigit() else 0
                     url = s.get("url") or ""
-                    # Prefer Piped proxy hosts (work from cloud); skip broken LBRY/odycdn
                     is_proxy = 1 if ("proxy.piped" in url or "/videoplayback" in url) else 0
                     is_odycdn = 1 if "odycdn.com" in url else 0
                     return (is_proxy, -is_odycdn, -abs(h - height) if h else -999, h)
@@ -243,11 +242,12 @@ async def resolve_via_piped(
                 stream_url = s.get("url")
                 if not stream_url:
                     continue
-                # Skip known-broken LBRY CDN without trying long timeouts
                 if "odycdn.com" in stream_url and "proxy.piped" not in stream_url:
                     continue
-                if not await _probe_media_url(client, stream_url):
-                    continue
+                if require_probe and not await _probe_media_url(client, stream_url):
+                    # Still accept Piped proxy hosts without probe (cloud probes can flake)
+                    if "proxy.piped" not in stream_url:
+                        continue
 
                 qlabel = str(s.get("quality") or s.get("qualityLabel") or quality)
                 logger.info("Piped hit: %s quality=%s", api, qlabel)
@@ -261,37 +261,68 @@ async def resolve_via_piped(
     return None
 
 
+async def collect_youtube_candidates(
+    page_url: str,
+    format_type: str = "video",
+    quality: str = "720p",
+) -> List[Dict[str, Any]]:
+    """
+    Return multiple download candidates in cloud-friendly order.
+
+    Piped proxy first (Render → Piped → YouTube), then InnerTube, then Invidious.
+    Callers should try each until one yields real media bytes.
+    """
+    video_id = extract_youtube_id(page_url)
+    if not video_id:
+        return []
+
+    quality = normalize_quality(quality, format_type)
+    candidates: List[Dict[str, Any]] = []
+
+    # 1) Piped (best for cloud IPs — media comes from proxy.piped.*, not googlevideo)
+    try:
+        piped = await resolve_via_piped(video_id, format_type, quality, require_probe=False)
+        if piped:
+            candidates.append(piped)
+    except Exception as exc:
+        logger.debug("Piped collect failed: %s", exc)
+
+    # 2) InnerTube direct googlevideo (often 403 on Render datacenter IPs)
+    try:
+        from app.services.innertube import resolve_via_innertube
+
+        innertube = await resolve_via_innertube(page_url, format_type, quality, require_probe=False)
+        if innertube:
+            candidates.append(innertube)
+    except Exception as exc:
+        logger.debug("InnerTube collect failed: %s", exc)
+
+    # 3) Invidious last
+    try:
+        inv = await resolve_via_invidious(video_id, format_type, quality)
+        if inv:
+            candidates.append(inv)
+    except Exception as exc:
+        logger.debug("Invidious collect failed: %s", exc)
+
+    # de-dupe by URL
+    seen = set()
+    unique: List[Dict[str, Any]] = []
+    for c in candidates:
+        u = c.get("url")
+        if not u or u in seen:
+            continue
+        seen.add(u)
+        unique.append(c)
+    logger.info("YouTube candidates for %s: %s", video_id, [c.get("provider") for c in unique])
+    return unique
+
+
 async def resolve_external_download(
     page_url: str,
     format_type: str = "video",
     quality: str = "720p",
 ) -> Optional[Dict[str, Any]]:
-    """Resolve a playable progressive media URL for YouTube."""
-    video_id = extract_youtube_id(page_url)
-    if not video_id:
-        return None
-
-    quality = normalize_quality(quality, format_type)
-
-    # 1) InnerTube ANDROID_VR / TV — direct googlevideo progressive MP4
-    try:
-        from app.services.innertube import resolve_via_innertube
-
-        result = await resolve_via_innertube(page_url, format_type, quality)
-        if result:
-            return result
-    except Exception as exc:
-        logger.debug("InnerTube resolve failed: %s", exc)
-
-    # 2) Piped proxy URLs
-    result = await resolve_via_piped(video_id, format_type, quality)
-    if result:
-        return result
-
-    # 3) Invidious (often down, last resort)
-    result = await resolve_via_invidious(video_id, format_type, quality)
-    if result:
-        return result
-
-    logger.warning("No external stream resolver succeeded for %s", video_id)
-    return None
+    """Resolve first available playable progressive media URL for YouTube."""
+    candidates = await collect_youtube_candidates(page_url, format_type, quality)
+    return candidates[0] if candidates else None

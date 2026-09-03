@@ -437,7 +437,50 @@ document.addEventListener('DOMContentLoaded', () => {
                 throw new Error(detail);
             }
 
-            // STEP 5: Always save as a local file (direct yt-dlp OR proxied Invidious stream)
+            const contentType = (response.headers.get('content-type') || '').toLowerCase();
+
+            // Fallback: server could not proxy bytes — open Piped URL in browser
+            if (contentType.includes('application/json')) {
+                const data = await response.json();
+                if (!data.success || !data.download_url) {
+                    throw new Error(data.detail || 'Download link unavailable.');
+                }
+
+                progressStatusText.innerHTML = '<i class="fa-solid fa-circle-check" style="color: #10b981;"></i> Opening mirror download...';
+                progressBarFill.style.width = '100%';
+                progressPercent.textContent = '100%';
+
+                const a = document.createElement('a');
+                a.href = data.download_url;
+                a.target = '_blank';
+                a.rel = 'noopener noreferrer';
+                a.download = data.filename || 'video.mp4';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+
+                showToast(
+                    'Mirror opened — if video plays, right-click → Save video as…',
+                    'success'
+                );
+
+                saveToHistory({
+                    title: currentVideoData.title,
+                    thumbnail: currentVideoData.thumbnail,
+                    url: currentVideoData.webpage_url,
+                    format: selectedFormat.label,
+                    timestamp: new Date().toLocaleString()
+                });
+
+                setTimeout(() => {
+                    startDownloadBtn.disabled = false;
+                    downloadProgressBox.classList.add('hidden');
+                    isProcessing = false;
+                }, 3000);
+                return;
+            }
+
+            // STEP 5: Always save as a local file (direct yt-dlp OR proxied stream)
             progressStatusText.innerHTML = '<i class="fa-solid fa-floppy-disk fa-spin"></i> Saving to device...';
             progressBarFill.style.width = '85%';
             progressPercent.textContent = '85%';

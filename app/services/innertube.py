@@ -137,6 +137,7 @@ async def resolve_via_innertube(
     page_url: str,
     format_type: str = "video",
     quality: str = "720p",
+    require_probe: bool = True,
 ) -> Optional[Dict[str, Any]]:
     """
     Resolve a progressive playable media URL via InnerTube.
@@ -152,7 +153,6 @@ async def resolve_via_innertube(
 
     streaming = data.get("streamingData") or {}
     progressive: List[Dict[str, Any]] = list(streaming.get("formats") or [])
-    # Only entries with direct URLs (no cipher)
     progressive = [f for f in progressive if f.get("url")]
 
     target = 720
@@ -171,12 +171,13 @@ async def resolve_via_innertube(
         ext = "m4a"
         content_type = "audio/mp4"
     else:
-        # Prefer mp4 progressive closest to requested height
-        mp4 = [
-            f for f in progressive
-            if "mp4" in str(f.get("mimeType") or "")
-        ]
-        mp4.sort(key=lambda f: (-(1 if _height_from_format(f) <= target else 0), -_height_from_format(f)))
+        mp4 = [f for f in progressive if "mp4" in str(f.get("mimeType") or "")]
+        mp4.sort(
+            key=lambda f: (
+                -(1 if _height_from_format(f) <= target else 0),
+                -_height_from_format(f),
+            )
+        )
         chosen = mp4[0] if mp4 else (progressive[0] if progressive else None)
         ext = "mp4"
         content_type = "video/mp4"
@@ -185,21 +186,20 @@ async def resolve_via_innertube(
         return None
 
     stream_url = chosen["url"]
-    # Verify bytes look like media
-    try:
-        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
-            probe = await client.get(
-                stream_url,
-                headers={"Range": "bytes=0-1023", "User-Agent": "Mozilla/5.0"},
-            )
-            if probe.status_code >= 400 or not looks_like_media(probe.content):
-                logger.warning("InnerTube URL probe failed for %s", video_id)
-                # Still return URL — full GET may work when Range fails on some edges
-                if probe.status_code >= 400:
-                    return None
-    except Exception as exc:
-        logger.warning("InnerTube probe error: %s", exc)
-        return None
+    if require_probe:
+        try:
+            async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+                probe = await client.get(
+                    stream_url,
+                    headers={"Range": "bytes=0-1023", "User-Agent": "Mozilla/5.0"},
+                )
+                if probe.status_code >= 400 or not looks_like_media(probe.content):
+                    logger.warning("InnerTube URL probe failed for %s", video_id)
+                    if probe.status_code >= 400:
+                        return None
+        except Exception as exc:
+            logger.warning("InnerTube probe error: %s", exc)
+            return None
 
     qlabel = chosen.get("qualityLabel") or quality or "360p"
     return {
